@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -27,6 +28,14 @@ class Visitor(Base, TimestampMixin):
     Per spec §12: Visitor ID.
     """
     __tablename__ = "visitors"
+    __table_args__ = (
+        # A visitor_token must be unique per website.
+        # Prevents duplicate rows from race conditions or replay.
+        UniqueConstraint(
+            "website_id", "visitor_token",
+            name="uq_visitors_website_token",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -73,7 +82,8 @@ class Session(Base, TimestampMixin):
     __tablename__ = "sessions"
     __table_args__ = (
         Index("ix_sessions_org_created", "organization_id", "created_at"),
-        Index("ix_sessions_ip", "ip_address"),
+        # ix_sessions_ip removed — duplicate of ix_sessions_ip_address
+        # which is auto-created via index=True on the column.
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

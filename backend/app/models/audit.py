@@ -26,7 +26,7 @@ class AuditLog(Base, TimestampMixin):
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="SET NULL"),
-        index=True,
+        # index=True, <-- REMOVED: covered by composite ix_audit_logs_org_created
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

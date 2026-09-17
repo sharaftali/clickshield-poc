@@ -51,7 +51,7 @@ class Exclusion(Base, TimestampMixin):
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
+        # index=True, <-- REMOVED: covered by composite ix_exclusions_org_status
     )
     google_customer_id: Mapped[str] = mapped_column(String(20), nullable=False)
     campaign_id: Mapped[str] = mapped_column(
