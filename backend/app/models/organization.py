@@ -6,8 +6,8 @@ from sqlalchemy import Boolean, Enum, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models.base import Base, TimestampMixin
-from backend.app.models.enums import ProtectionMode, UserRole
+from app.models.base import Base, TimestampMixin
+from app.models.enums import ProtectionMode, UserRole
 
 
 class Organization(Base, TimestampMixin):

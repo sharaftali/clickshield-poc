@@ -15,7 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models.base import Base, TimestampMixin
+from app.models.base import Base, TimestampMixin
 
 
 class IPReputation(Base, TimestampMixin):

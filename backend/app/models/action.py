@@ -16,8 +16,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.models.base import Base, TimestampMixin
-from backend.app.models.enums import (
+from app.models.base import Base, TimestampMixin
+from app.models.enums import (
     ActionStatus,
     ActionType,
     ExclusionStatus,

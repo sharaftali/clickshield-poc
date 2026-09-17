@@ -6,8 +6,8 @@ from sqlalchemy import Enum, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.models.base import Base, TimestampMixin
-from backend.app.models.enums import AuditResult
+from app.models.base import Base, TimestampMixin
+from app.models.enums import AuditResult
 
 
 class AuditLog(Base, TimestampMixin):

@@ -17,8 +17,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models.base import Base, TimestampMixin
-from backend.app.models.enums import ClientVerdict, EventType, Verdict
+from app.models.base import Base, TimestampMixin
+from app.models.enums import ClientVerdict, EventType, Verdict
 
 
 class Visitor(Base, TimestampMixin):

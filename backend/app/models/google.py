@@ -15,8 +15,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models.base import Base, TimestampMixin
-from backend.app.models.enums import CampaignStatus, CampaignType
+from app.models.base import Base, TimestampMixin
+from app.models.enums import CampaignStatus, CampaignType
 
 
 class GoogleConnection(Base, TimestampMixin):
