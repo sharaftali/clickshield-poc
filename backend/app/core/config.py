@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+    # ---- Application ----
+    APP_NAME: str = "Click Shield"
+    APP_VERSION: str = "0.1.0"
+    ENVIRONMENT: str = Field(
+        default="development",
+        description="development | staging | production",
+    )
+    DEBUG: bool = False
+
+    # ---- Database ----
+    DATABASE_URL: str = Field(
+        ...,
+        description="PostgreSQL async connection string (postgresql+asyncpg://...)",
+    )
+    DATABASE_URL_SYNC: str = Field(
+        ...,
+        description="PostgreSQL sync connection string for Alembic (postgresql+psycopg://...)",
+    )
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_ECHO: bool = False
+
+    # ---- Redis ----
+    REDIS_URL: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection string for cache + action queue",
+    )
+
+    # ---- Security / Auth ----
+    SECRET_KEY: str = Field(..., min_length=32)
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # ---- Token Encryption (spec §63) ----
+    # Fernet key for encrypting Google refresh tokens at rest.
+    # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    TOKEN_ENCRYPTION_KEY: str = Field(
+        ...,
+        description="Fernet key used to encrypt Google OAuth refresh tokens at rest",
+    )
+
+    # ---- Google Ads API (spec §34–36) ----
+    GOOGLE_CLIENT_ID: str = Field(..., description="Google OAuth client ID")
+    GOOGLE_CLIENT_SECRET: str = Field(..., description="Google OAuth client secret")
+    GOOGLE_OAUTH_REDIRECT_URI: str = Field(
+        ...,
+        description="OAuth callback URL, e.g. https://api.clickshield.com/api/v1/google/callback",
+    )
+    # Optional — accepted but ignored by Google servers after Sept 2026.
+    # Kept for backward compatibility during transition.
+    GOOGLE_DEVELOPER_TOKEN: str | None = Field(
+        default=None,
+        description="Legacy developer token. Accepted but ignored by Google Ads API.",
+    )
+    GOOGLE_ADS_API_VERSION: str = "v21"
+
+    # ---- IP Intelligence (spec §13) ----
+    IPINFO_API_KEY: str | None = Field(
+        default=None,
+        description="IPinfo API key for IP intelligence lookups",
+    )
+    IPINFO_TIMEOUT_SECONDS: int = 3
+
+    # ---- Tracking API (spec §8, §61) ----
+    TRACKING_RATE_LIMIT_PER_MINUTE: int = 300
+    TRACKING_SNIPPET_BASE_URL: str = Field(
+        default="http://localhost:8000",
+        description="Public base URL for the tracking script CDN",
+    )
+    TRACKING_CORS_ORIGINS: str = Field(
+        default="*",
+        description="Comma-separated origins allowed to POST to /track",
+    )
+
+    # ---- Dashboard / API CORS ----
+    API_CORS_ORIGINS: str = Field(
+        default="http://localhost:3000",
+        description="Comma-separated origins for the dashboard frontend",
+    )
+
+    # ---- Fraud Engine Defaults (spec §24, §28) ----
+    FRAUD_RISK_FRAUD_THRESHOLD: int = 80
+    FRAUD_RISK_MONITOR_THRESHOLD: int = 50
+    FRAUD_CONFIDENCE_MIN_FOR_BLOCK: int = 80
+
+    # ---- Google Ads Exclusion Limits (spec §39) ----
+    # Google documents a 500 IP/campaign limit. Configurable so it can be
+    # adjusted if Google changes it (spec §73).
+    GOOGLE_MAX_IP_EXCLUSIONS_PER_CAMPAIGN: int = 500
+
+    # ---- Action Queue (spec §42–43) ----
+    ACTION_QUEUE_MAX_ATTEMPTS: int = 5
+    ACTION_QUEUE_RETRY_BACKOFF_SECONDS: int = 30
+    ACTION_QUEUE_WORKER_CONCURRENCY: int = 4
+
+    # ---- Bootstrap Admin (first-run seeding only) ----
+    DEFAULT_ORGANIZATION_NAME: str = "Default Organization"
+    DEFAULT_ORGANIZATION_SLUG: str = "default"
+    DEFAULT_ADMIN_EMAIL: str = "admin@clickshield.local"
+    DEFAULT_ADMIN_PASSWORD: str = "ChangeMe@123"
+    DEFAULT_ADMIN_FULL_NAME: str = "Admin"
+
+    # ---- Data Retention (spec §79) ----
+    RAW_EVENTS_RETENTION_DAYS: int = 30
+    SESSIONS_RETENTION_DAYS: int = 90
+
+
+settings = Settings()
