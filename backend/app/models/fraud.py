@@ -1,11 +1,21 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+
 from sqlalchemy import (
-    String, ForeignKey, Integer, Float, DateTime, Text, Boolean, Index
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
 )
-from sqlalchemy.dialects.postgresql import UUID, INET
+from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.models.base import Base, TimestampMixin
+
+from backend.app.models.base import Base, TimestampMixin
 
 
 class IPReputation(Base, TimestampMixin):
@@ -55,12 +65,16 @@ class FraudEvent(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     session_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Rule identity (spec §21)

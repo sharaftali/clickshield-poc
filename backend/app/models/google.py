@@ -1,9 +1,22 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
-from sqlalchemy import String, ForeignKey, Boolean, DateTime, Text, BigInteger
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.models.base import Base, TimestampMixin
+
+from backend.app.models.base import Base, TimestampMixin
+from backend.app.models.enums import CampaignStatus, CampaignType
 
 
 class GoogleConnection(Base, TimestampMixin):
@@ -17,8 +30,10 @@ class GoogleConnection(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Encrypted refresh token (spec §63)
@@ -36,10 +51,16 @@ class GoogleConnection(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Track auth expiration
-    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
-    organization = relationship("Organization", back_populates="google_connections")
+    organization = relationship(
+        "Organization", back_populates="google_connections"
+    )
     campaigns = relationship("GoogleCampaign", back_populates="connection")
 
 
@@ -54,24 +75,41 @@ class GoogleCampaign(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     connection_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("google_connections.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("google_connections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
-    campaign_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    campaign_id: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    # Campaign type — important per spec §37: PMax/YouTube don't support campaign-level IP exclusion
-    campaign_type: Mapped[str] = mapped_column(
-        String(50), default="SEARCH", nullable=False
-    )  # SEARCH | PERFORMANCE_MAX | DISPLAY | VIDEO | SHOPPING
+    # Campaign type — important per spec §37:
+    # PMax/YouTube don't support campaign-level IP exclusion
+    campaign_type: Mapped[CampaignType] = mapped_column(
+        Enum(CampaignType, name="campaign_type_enum"),
+        default=CampaignType.SEARCH,
+        nullable=False,
+    )
 
-    status: Mapped[str] = mapped_column(String(20), default="ENABLED", nullable=False)
+    status: Mapped[CampaignStatus] = mapped_column(
+        Enum(CampaignStatus, name="campaign_status_enum"),
+        default=CampaignStatus.ENABLED,
+        nullable=False,
+    )
 
     # Protection toggle per campaign (spec §48)
-    protection_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    protection_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
 
     # Cached count for exclusion capacity tracking (spec §39)
-    exclusion_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    exclusion_count: Mapped[int] = mapped_column(
+        BigInteger, default=0, nullable=False
+    )
 
-    connection = relationship("GoogleConnection", back_populates="campaigns")
+    connection = relationship(
+        "GoogleConnection", back_populates="campaigns"
+    )

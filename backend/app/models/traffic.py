@@ -1,11 +1,24 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+
 from sqlalchemy import (
-    String, ForeignKey, Integer, Float, DateTime, Text, Boolean, BigInteger, Index
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
 )
-from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
+from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.models.base import Base, TimestampMixin
+
+from backend.app.models.base import Base, TimestampMixin
+from backend.app.models.enums import ClientVerdict, EventType, Verdict
 
 
 class Visitor(Base, TimestampMixin):
@@ -19,16 +32,22 @@ class Visitor(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     website_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("websites.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("websites.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     # Client-side generated visitor identifier (from JS)
-    visitor_token: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    visitor_token: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
 
     # Primary IP seen (last known)
     ip_address: Mapped[str | None] = mapped_column(INET)
@@ -39,7 +58,9 @@ class Visitor(Base, TimestampMixin):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    total_sessions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_sessions: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
 
     sessions = relationship("Session", back_populates="visitor")
 
@@ -53,27 +74,33 @@ class Session(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_sessions_org_created", "organization_id", "created_at"),
         Index("ix_sessions_ip", "ip_address"),
-        Index("ix_sessions_verdict", "verdict"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     website_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("websites.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("websites.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     visitor_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("visitors.id", ondelete="SET NULL"),
-        index=True
+        UUID(as_uuid=True),
+        ForeignKey("visitors.id", ondelete="SET NULL"),
+        index=True,
     )
 
     # Client-side generated session identifier
-    session_token: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    session_token: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
 
     # ---- Attribution (spec §10) ----
     gclid: Mapped[str | None] = mapped_column(String(255), index=True)
@@ -87,8 +114,9 @@ class Session(Base, TimestampMixin):
 
     # Link to discovered Google campaign (nullable — matched by UTM/campaign name)
     google_campaign_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("google_campaigns.id", ondelete="SET NULL"),
-        index=True
+        UUID(as_uuid=True),
+        ForeignKey("google_campaigns.id", ondelete="SET NULL"),
+        index=True,
     )
 
     # ---- IP Intelligence (spec §13) ----
@@ -104,7 +132,7 @@ class Session(Base, TimestampMixin):
     is_datacenter: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # ---- Technical signals (spec §19) ----
-    device: Mapped[str | None] = mapped_column(String(50))       # desktop | mobile | tablet
+    device: Mapped[str | None] = mapped_column(String(50))  # desktop | mobile | tablet
     browser: Mapped[str | None] = mapped_column(String(50))
     os: Mapped[str | None] = mapped_column(String(50))
     language: Mapped[str | None] = mapped_column(String(20))
@@ -112,31 +140,64 @@ class Session(Base, TimestampMixin):
     user_agent: Mapped[str | None] = mapped_column(Text)
 
     # ---- Behavioral signals (spec §15) ----
-    session_duration_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    session_duration_seconds: Mapped[float] = mapped_column(
+        Float, default=0.0, nullable=False
+    )
     page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     click_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    interaction_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    scroll_depth: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    interaction_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    scroll_depth: Mapped[float] = mapped_column(
+        Float, default=0.0, nullable=False
+    )
 
     # ---- Click velocity (spec §16) ----
-    clicks_10_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    clicks_30_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    clicks_60_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    clicks_5_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    clicks_1_hour: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    clicks_24_hours: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    clicks_10_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    clicks_30_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    clicks_60_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    clicks_5_minutes: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    clicks_1_hour: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    clicks_24_hours: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
 
     # ---- Scoring (spec §24, §28) ----
     risk_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    confidence_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    verdict: Mapped[str] = mapped_column(
-        String(20), default="SAFE", nullable=False, index=True
-    )  # SAFE | MONITOR | FLAG | FRAUD
+    confidence_score: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
+    verdict: Mapped[Verdict] = mapped_column(
+        Enum(Verdict, name="verdict_enum"),
+        default=Verdict.SAFE,
+        nullable=False,
+        index=True,
+    )
 
     # ---- Feedback (spec §50) ----
-    system_verdict: Mapped[str] = mapped_column(String(20), nullable=False)
-    client_verdict: Mapped[str | None] = mapped_column(String(20))  # legitimate | fraud
-    final_label: Mapped[str | None] = mapped_column(String(20))
+    system_verdict: Mapped[Verdict] = mapped_column(
+        Enum(Verdict, name="verdict_enum"),
+        nullable=False,
+    )
+    client_verdict: Mapped[ClientVerdict | None] = mapped_column(
+        Enum(ClientVerdict, name="client_verdict_enum"),
+        nullable=True,
+    )
+    final_label: Mapped[Verdict | None] = mapped_column(
+        Enum(Verdict, name="verdict_enum"),
+        nullable=True,
+    )
 
     # Extensible raw signals blob (useful for ML later, spec §30)
     extra_signals: Mapped[dict | None] = mapped_column(JSONB)
@@ -161,20 +222,27 @@ class Event(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     session_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
-    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    # ad_landing | page_view | scroll | click | form_start | form_submit |
-    # phone_click | outbound_click | session_start | session_end | conversion
+    event_type: Mapped[EventType] = mapped_column(
+        Enum(EventType, name="event_type_enum"),
+        nullable=False,
+    )
 
     page_url: Mapped[str | None] = mapped_column(Text)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
     # Arbitrary event payload
     payload: Mapped[dict | None] = mapped_column(JSONB)

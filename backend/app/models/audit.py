@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import uuid
-from sqlalchemy import String, ForeignKey, Text, Index
-from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
+
+from sqlalchemy import Enum, ForeignKey, Index, String, Text
+from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
-from app.models.base import Base, TimestampMixin
+
+from backend.app.models.base import Base, TimestampMixin
+from backend.app.models.enums import AuditResult
 
 
 class AuditLog(Base, TimestampMixin):
@@ -19,11 +24,13 @@ class AuditLog(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="SET NULL"),
-        index=True
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        index=True,
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
     )
 
     action: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -36,8 +43,10 @@ class AuditLog(Base, TimestampMixin):
     ip_address: Mapped[str | None] = mapped_column(INET)
     details: Mapped[dict | None] = mapped_column(JSONB)
 
-    result: Mapped[str] = mapped_column(String(20), nullable=False)
-    # SUCCESS | FAILED | PENDING
+    result: Mapped[AuditResult] = mapped_column(
+        Enum(AuditResult, name="audit_result_enum"),
+        nullable=False,
+    )
 
     error_message: Mapped[str | None] = mapped_column(Text)
     google_request_id: Mapped[str | None] = mapped_column(String(100))
