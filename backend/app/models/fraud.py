@@ -57,7 +57,7 @@ class FraudEvent(Base, TimestampMixin):
     """
     __tablename__ = "fraud_events"
     __table_args__ = (
-        Index("ix_fraud_events_session", "session_id"),
+        # Index("ix_fraud_events_session", "session_id"), <-- REMOVED: duplicate of column-level index=True
         Index("ix_fraud_events_org_created", "organization_id", "created_at"),
     )
 
