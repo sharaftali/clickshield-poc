@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -8,6 +10,12 @@ from app.schemas.tracking import TrackingBatchIn, TrackingResponse
 from app.services.tracking_service import TrackingService
 
 router = APIRouter(prefix="/api/v1", tags=["tracking"])
+
+
+@router.get("/tracking.js")
+async def tracking_script() -> Response:
+    script_path = Path(__file__).resolve().parents[1] / "static" / "clickshield-tracker.js"
+    return Response(content=script_path.read_text(encoding="utf-8"), media_type="application/javascript")
 
 
 @router.post("/track", response_model=TrackingResponse)

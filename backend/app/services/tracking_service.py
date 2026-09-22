@@ -24,10 +24,38 @@ logger = logging.getLogger(__name__)
 
 
 class TrackingService:
+    MAX_BATCH_SIZE = 50
+    MAX_EVENT_AGE_SECONDS = 3600
+
     def __init__(self, db: AsyncSession):
         self.db = db
         self.ip_intel = IPIntelService()
         self.fraud_engine = FraudEngine()
+
+    def _validate_payload(self, payload: TrackingBatchIn) -> None:
+        if not payload.events:
+            raise ValueError("At least one tracking event is required.")
+        if len(payload.events) > self.MAX_BATCH_SIZE:
+            raise ValueError(
+                f"Tracking batches cannot exceed {self.MAX_BATCH_SIZE} events."
+            )
+
+        valid_event_types = {event_type.value for event_type in EventType}
+        now = datetime.now(timezone.utc)
+
+        for event in payload.events:
+            if not event.site_token or not event.visitor_token or not event.session_token:
+                raise ValueError("site_token, visitor_token and session_token are required.")
+            if event.event_type not in valid_event_types:
+                raise ValueError(f"Unsupported event type: {event.event_type}")
+
+            event_time = event.timestamp
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+            if (now - event_time).total_seconds() > self.MAX_EVENT_AGE_SECONDS:
+                raise ValueError("Tracking event timestamp is too old.")
+            if (event_time - now).total_seconds() > 300:
+                raise ValueError("Tracking event timestamp cannot be in the future.")
 
     async def ingest_batch(
         self,
@@ -35,6 +63,7 @@ class TrackingService:
         client_ip: str,
         request: Request,
     ) -> TrackingResponse:
+        self._validate_payload(payload)
         first = payload.events[0]
 
         website = await self._get_website(first.site_token)
@@ -47,19 +76,22 @@ class TrackingService:
             client_ip,
         )
 
-        visitor = await self._get_or_create_visitor(
+        visitor, visitor_is_new = await self._get_or_create_visitor(
             website=website,
             visitor_token=first.visitor_token,
             client_ip=client_ip,
         )
 
-        session = await self._get_or_create_session(
+        session, session_is_new = await self._get_or_create_session(
             website=website,
             visitor=visitor,
             first_event=first,
             client_ip=client_ip,
             request=request,
         )
+
+        if session_is_new:
+            visitor.total_sessions = (visitor.total_sessions or 0) + 1
 
         for ev in payload.events:
             event = Event(
@@ -110,7 +142,7 @@ class TrackingService:
         website: Website,
         visitor_token: str,
         client_ip: str,
-    ) -> Visitor:
+    ) -> tuple[Visitor, bool]:
         result = await self.db.execute(
             select(Visitor)
             .where(
@@ -125,9 +157,8 @@ class TrackingService:
 
         if visitor:
             visitor.last_seen_at = now
-            visitor.total_sessions += 1
             visitor.ip_address = client_ip
-            return visitor
+            return visitor, False
 
         visitor = Visitor(
             organization_id=website.organization_id,
@@ -136,13 +167,13 @@ class TrackingService:
             ip_address=client_ip,
             first_seen_at=now,
             last_seen_at=now,
-            total_sessions=1,
+            total_sessions=0,
         )
         self.db.add(visitor)
 
         try:
             await self.db.flush()
-            return visitor
+            return visitor, True
         except IntegrityError:
             await self.db.rollback()
             result = await self.db.execute(
@@ -158,9 +189,8 @@ class TrackingService:
             if not existing:
                 raise
             existing.last_seen_at = now
-            existing.total_sessions += 1
             existing.ip_address = client_ip
-            return existing
+            return existing, False
 
     async def _get_or_create_session(
         self,
@@ -169,7 +199,7 @@ class TrackingService:
         first_event,
         client_ip: str,
         request: Request,
-    ) -> Session:
+    ) -> tuple[Session, bool]:
         result = await self.db.execute(
             select(Session)
             .where(Session.session_token == first_event.session_token)
@@ -178,7 +208,7 @@ class TrackingService:
         )
         session = result.scalar_one_or_none()
         if session:
-            return session
+            return session, False
 
         ip_data = await self.ip_intel.lookup(client_ip)
 
@@ -213,7 +243,7 @@ class TrackingService:
 
         try:
             await self.db.flush()
-            return session
+            return session, True
         except IntegrityError:
             await self.db.rollback()
             result = await self.db.execute(
@@ -225,19 +255,67 @@ class TrackingService:
             existing = result.scalar_one_or_none()
             if not existing:
                 raise
-            return existing
+            return existing, False
 
     def _update_session_counters(
         self, session: Session, payload: TrackingBatchIn
     ) -> None:
+        event_timestamps: list[datetime] = []
+        click_timestamps: list[datetime] = []
+
         for ev in payload.events:
+            event_timestamp = ev.timestamp
+            if event_timestamp.tzinfo is None:
+                event_timestamp = event_timestamp.replace(tzinfo=timezone.utc)
+            event_timestamps.append(event_timestamp)
+
             if ev.event_type == EventType.PAGE_VIEW.value:
                 session.page_count = (session.page_count or 0) + 1
             elif ev.event_type == EventType.CLICK.value:
                 session.click_count = (session.click_count or 0) + 1
+                click_timestamps.append(event_timestamp)
             elif ev.event_type == EventType.SCROLL.value:
                 if ev.payload and "depth" in ev.payload:
                     session.scroll_depth = max(
                         session.scroll_depth or 0.0,
                         float(ev.payload["depth"]),
                     )
+
+        if event_timestamps:
+            start = min(event_timestamps)
+            end = max(event_timestamps)
+            session.session_duration_seconds = max(
+                session.session_duration_seconds or 0.0,
+                (end - start).total_seconds(),
+            )
+
+        if click_timestamps:
+            newest_click = max(click_timestamps)
+            windows = {
+                10: 10,
+                30: 30,
+                60: 60,
+                300: 300,
+                3600: 3600,
+                86400: 86400,
+            }
+            for seconds in windows:
+                bucket = sum(
+                    1
+                    for ts in click_timestamps
+                    if (newest_click - ts).total_seconds() <= seconds
+                )
+                if seconds == 10:
+                    session.clicks_10_seconds = bucket
+                elif seconds == 30:
+                    session.clicks_30_seconds = bucket
+                elif seconds == 60:
+                    session.clicks_60_seconds = bucket
+                elif seconds == 300:
+                    session.clicks_5_minutes = bucket
+                elif seconds == 3600:
+                    session.clicks_1_hour = bucket
+                elif seconds == 86400:
+                    session.clicks_24_hours = bucket
+
+        session.interaction_count = (session.interaction_count or 0) + len(payload.events)

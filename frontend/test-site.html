@@ -1,101 +1,20 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8" />
   <title>Click Shield Test</title>
 </head>
 <body>
   <h1>Click Shield Test Page</h1>
   <p>Open the browser console to see tracking events.</p>
+  <a href="#cta" id="cta-link">Click here</a>
 
   <script>
-    (function () {
-      const SITE_TOKEN = "-yBte1BRtDMcPtXnIbwEXL3P0s0hAtOl";
-      const API = "http://localhost:8000/api/v1/track";
-
-      // Generate or reuse tokens
-      const visitorToken =
-        localStorage.getItem("cs_visitor") ||
-        (() => {
-          const t = "v_" + Math.random().toString(36).slice(2) + Date.now();
-          localStorage.setItem("cs_visitor", t);
-          return t;
-        })();
-
-      const sessionToken =
-        sessionStorage.getItem("cs_session") ||
-        (() => {
-          const t = "s_" + Math.random().toString(36).slice(2) + Date.now();
-          sessionStorage.setItem("cs_session", t);
-          return t;
-        })();
-
-      // Grab attribution params from URL
-      const params = new URLSearchParams(location.search);
-
-      async function send(eventType, payload = {}) {
-        const body = {
-          events: [
-            {
-              site_token: SITE_TOKEN,
-              visitor_token: visitorToken,
-              session_token: sessionToken,
-              event_type: eventType,
-              page_url: location.href,
-              timestamp: new Date().toISOString(),
-              gclid: params.get("gclid"),
-              utm_source: params.get("utm_source"),
-              utm_medium: params.get("utm_medium"),
-              utm_campaign: params.get("utm_campaign"),
-              utm_term: params.get("utm_term"),
-              utm_content: params.get("utm_content"),
-              referrer: document.referrer || null,
-              payload,
-            },
-          ],
-        };
-        try {
-          const res = await fetch(API, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-          const json = await res.json();
-          console.log("[Click Shield]", eventType, json);
-        } catch (e) {
-          console.error("[Click Shield] error", e);
-        }
-      }
-
-      // Fire initial landing event
-      send("ad_landing");
-
-      // Fire page_view
-      send("page_view");
-
-      // Fire scroll at 50% depth
-      window.addEventListener("scroll", () => {
-        const depth =
-          (window.scrollY /
-            (document.body.scrollHeight - window.innerHeight)) *
-          100;
-        if (depth > 50 && !window._csScroll) {
-          window._csScroll = true;
-          send("scroll", { depth: 50 });
-        }
-      });
-
-      // Fire click on first click
-      document.addEventListener(
-        "click",
-        () => {
-          if (!window._csClick) {
-            window._csClick = true;
-            send("click");
-          }
-        },
-        { once: true }
-      );
-    })();
+    window.ClickShieldConfig = {
+      siteToken: '-yBte1BRtDMcPtXnIbwEXL3P0s0hAtOl',
+      trackingUrl: 'http://localhost:8000/api/v1/track',
+    };
   </script>
+  <script src="http://localhost:8000/api/v1/tracking.js"></script>
 </body>
 </html>
