@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
+        env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
     )
@@ -22,11 +23,11 @@ class Settings(BaseSettings):
 
     # ---- Database ----
     DATABASE_URL: str = Field(
-        ...,
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/clickshield",
         description="PostgreSQL async connection string (postgresql+asyncpg://...)",
     )
     DATABASE_URL_SYNC: str = Field(
-        ...,
+        default="postgresql+psycopg://postgres:postgres@localhost:5432/clickshield",
         description="PostgreSQL sync connection string for Alembic (postgresql+psycopg://...)",
     )
     DB_POOL_SIZE: int = 10
@@ -40,28 +41,35 @@ class Settings(BaseSettings):
     )
 
     # ---- Security / Auth ----
-    SECRET_KEY: str = Field(..., min_length=32)
+    SECRET_KEY: str = Field(
+        default="dev-secret-key-change-me-in-production-environment",
+        min_length=32,
+        description="JWT signing secret. Must be overridden in production.",
+    )
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # ---- Token Encryption (spec §63) ----
-    # Fernet key for encrypting Google refresh tokens at rest.
-    # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Use a stable local dev key; override in production with a generated Fernet key.
     TOKEN_ENCRYPTION_KEY: str = Field(
-        ...,
+        default="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
         description="Fernet key used to encrypt Google OAuth refresh tokens at rest",
     )
 
     # ---- Google Ads API (spec §34–36) ----
-    GOOGLE_CLIENT_ID: str = Field(..., description="Google OAuth client ID")
-    GOOGLE_CLIENT_SECRET: str = Field(..., description="Google OAuth client secret")
+    GOOGLE_CLIENT_ID: str = Field(
+        default="",
+        description="Google OAuth client ID",
+    )
+    GOOGLE_CLIENT_SECRET: str = Field(
+        default="",
+        description="Google OAuth client secret",
+    )
     GOOGLE_OAUTH_REDIRECT_URI: str = Field(
-        ...,
+        default="http://localhost:8000/api/v1/google/callback",
         description="OAuth callback URL, e.g. https://api.clickshield.com/api/v1/google/callback",
     )
-    # Optional — accepted but ignored by Google servers after Sept 2026.
-    # Kept for backward compatibility during transition.
     GOOGLE_DEVELOPER_TOKEN: str | None = Field(
         default=None,
         description="Legacy developer token. Accepted but ignored by Google Ads API.",
@@ -98,8 +106,6 @@ class Settings(BaseSettings):
     FRAUD_CONFIDENCE_MIN_FOR_BLOCK: int = 80
 
     # ---- Google Ads Exclusion Limits (spec §39) ----
-    # Google documents a 500 IP/campaign limit. Configurable so it can be
-    # adjusted if Google changes it (spec §73).
     GOOGLE_MAX_IP_EXCLUSIONS_PER_CAMPAIGN: int = 500
 
     # ---- Action Queue (spec §42–43) ----
