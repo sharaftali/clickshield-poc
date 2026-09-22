@@ -6,6 +6,7 @@ from datetime import timedelta
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.security import create_token, hash_password, verify_password
 from app.models.enums import ProtectionMode, UserRole
@@ -21,7 +22,11 @@ class AuthService:
 
     @staticmethod
     async def _get_user_by_email(db: AsyncSession, email: str) -> User | None:
-        result = await db.execute(select(User).where(User.email == email))
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.organization))
+            .where(User.email == email)
+        )
         return result.scalar_one_or_none()
 
     @staticmethod

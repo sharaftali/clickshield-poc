@@ -8,6 +8,7 @@ import jwt
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.models.organization import User
@@ -81,7 +82,11 @@ async def get_user_from_token(db: AsyncSession, token: str) -> User:
             detail="Token payload is invalid.",
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.organization))
+        .where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
         raise HTTPException(

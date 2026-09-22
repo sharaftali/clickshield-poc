@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     # ---- Bootstrap Admin (first-run seeding only) ----
     DEFAULT_ORGANIZATION_NAME: str = "Default Organization"
     DEFAULT_ORGANIZATION_SLUG: str = "default"
-    DEFAULT_ADMIN_EMAIL: str = "admin@clickshield.local"
+    DEFAULT_ADMIN_EMAIL: str = "admin@gmail.com"
     DEFAULT_ADMIN_PASSWORD: str = "ChangeMe@123"
     DEFAULT_ADMIN_FULL_NAME: str = "Admin"
 
