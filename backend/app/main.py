@@ -15,6 +15,17 @@ from app.core.seed import seed_defaults
 logger = logging.getLogger(__name__)
 
 
+def _build_cors_origins() -> list[str]:
+    raw_values = [
+        *settings.TRACKING_CORS_ORIGINS.split(","),
+        *settings.API_CORS_ORIGINS.split(","),
+    ]
+    cleaned = [origin.strip() for origin in raw_values if origin.strip()]
+    if "*" in cleaned:
+        return ["*"]
+    return list(dict.fromkeys(cleaned))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ---- Startup ----
@@ -42,7 +53,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.TRACKING_CORS_ORIGINS.split(","),
+    allow_origins=_build_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

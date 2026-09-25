@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../services/apiService";
 import { verdictBadge, riskColor, fmtDate } from "../lib/utils";
-import type { DashboardSessionSummary, Verdict } from "../types/api";
+import type { ClientVerdict, DashboardSessionSummary, Verdict } from "../types/api";
 
 const VERDICT_FILTERS: Array<"ALL" | Verdict> = ["ALL", "SAFE", "MONITOR", "FLAG", "FRAUD"];
 
@@ -14,6 +14,15 @@ export default function SessionsPage() {
   const { data: sessions, isLoading, refetch, isFetching } = useQuery<DashboardSessionSummary[]>({
     queryKey: ["dashboard", "sessions", limit],
     queryFn: () => dashboardApi.sessions(limit),
+    refetchInterval: 10000,
+  });
+
+  const feedbackMutation = useMutation({
+    mutationFn: ({ sessionId, clientVerdict }: { sessionId: string; clientVerdict: ClientVerdict }) =>
+      dashboardApi.setSessionFeedback(sessionId, clientVerdict),
+    onSuccess: () => {
+      refetch();
+    },
   });
 
   const filteredSessions = useMemo(() => {
@@ -98,20 +107,21 @@ export default function SessionsPage() {
                   <th>Signals</th>
                   <th>Activity</th>
                   <th>Landing Page</th>
+                  <th>Feedback</th>
                   <th>Timestamp</th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading ? (
                   <tr>
-                    <td colSpan={8} className="empty-state">
+                    <td colSpan={9} className="empty-state">
                       <div className="spinner" />
                       <span>Loading sessions...</span>
                     </td>
                   </tr>
                 ) : filteredSessions.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="empty-state">
+                    <td colSpan={9} className="empty-state">
                       No matching sessions found
                     </td>
                   </tr>
@@ -157,6 +167,29 @@ export default function SessionsPage() {
                       </td>
                       <td style={{ fontSize: 12, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.landing_page ?? ""}>
                         {s.landing_page ?? "—"}
+                      </td>
+                      <td style={{ minWidth: 190 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <button
+                              className={`btn btn-sm ${s.client_verdict === "legitimate" ? "btn-primary" : "btn-secondary"}`}
+                              onClick={() => feedbackMutation.mutate({ sessionId: s.id, clientVerdict: "legitimate" })}
+                              disabled={feedbackMutation.isPending}
+                            >
+                              Mark Legitimate
+                            </button>
+                            <button
+                              className={`btn btn-sm ${s.client_verdict === "fraud" ? "btn-primary" : "btn-secondary"}`}
+                              onClick={() => feedbackMutation.mutate({ sessionId: s.id, clientVerdict: "fraud" })}
+                              disabled={feedbackMutation.isPending}
+                            >
+                              Mark Fraud
+                            </button>
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            Client feedback: {s.client_verdict ?? "Not provided"}
+                          </div>
+                        </div>
                       </td>
                       <td style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                         {fmtDate(s.created_at)}

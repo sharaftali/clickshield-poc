@@ -7,7 +7,7 @@ from ipaddress import IPv4Address, IPv6Address
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.enums import Verdict
+from app.models.enums import ClientVerdict, Verdict
 
 
 class DashboardOverview(BaseModel):
@@ -35,6 +35,8 @@ class DashboardSessionSummary(BaseModel):
     click_count: int = 0
     is_vpn: bool = False
     is_proxy: bool = False
+    client_verdict: ClientVerdict | None = None
+    final_label: Verdict | None = None
 
     @field_validator("ip_address", mode="before")
     @classmethod
@@ -64,3 +66,7 @@ class DashboardTopIP(BaseModel):
     confidence: int
     total_sessions: int
     fraud_sessions: int
+
+
+class SessionFeedbackIn(BaseModel):
+    client_verdict: ClientVerdict

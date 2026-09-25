@@ -9,8 +9,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    CampaignStatus,
     Event,
     EventType,
+    GoogleCampaign,
+    GoogleConnection,
     Session,
     Verdict,
     Visitor,
@@ -31,6 +34,66 @@ class TrackingService:
         self.db = db
         self.ip_intel = IPIntelService()
         self.fraud_engine = FraudEngine()
+
+    @staticmethod
+    def _normalize_campaign_value(value: str | None) -> str:
+        return (value or "").strip().casefold()
+
+    @staticmethod
+    def _detect_device(user_agent: str, payload: dict | None) -> str:
+        touch_points = int((payload or {}).get("touch_points") or 0)
+        ua = user_agent.casefold()
+        if "ipad" in ua or "tablet" in ua:
+            return "tablet"
+        if "mobile" in ua or "android" in ua or "iphone" in ua or touch_points > 1:
+            return "mobile"
+        return "desktop"
+
+    @staticmethod
+    def _detect_browser(user_agent: str) -> str | None:
+        ua = user_agent.casefold()
+        if "edg/" in ua:
+            return "Edge"
+        if "chrome/" in ua and "edg/" not in ua:
+            return "Chrome"
+        if "safari/" in ua and "chrome/" not in ua:
+            return "Safari"
+        if "firefox/" in ua:
+            return "Firefox"
+        if "opr/" in ua or "opera/" in ua:
+            return "Opera"
+        if "msie" in ua or "trident/" in ua:
+            return "Internet Explorer"
+        return None
+
+    @staticmethod
+    def _detect_os(user_agent: str) -> str | None:
+        ua = user_agent.casefold()
+        if "windows" in ua:
+            return "Windows"
+        if "mac os x" in ua or "macintosh" in ua:
+            return "macOS"
+        if "android" in ua:
+            return "Android"
+        if "iphone" in ua or "ipad" in ua or "ios" in ua:
+            return "iOS"
+        if "linux" in ua:
+            return "Linux"
+        return None
+
+    def _build_extra_signals(self, first_event, is_google_ads_traffic: bool) -> dict:
+        payload = dict(first_event.payload or {})
+        payload["source_platform"] = "google_ads" if is_google_ads_traffic else "other"
+        payload["campaign_id"] = first_event.campaign_id
+        payload["gclid_present"] = bool(first_event.gclid)
+        return payload
+
+    def _is_google_ads_traffic(self, first_event) -> bool:
+        if first_event.gclid:
+            return True
+        if first_event.campaign_id:
+            return True
+        return "google" in (first_event.utm_source or "").casefold()
 
     def _validate_payload(self, payload: TrackingBatchIn) -> None:
         if not payload.events:
@@ -106,7 +169,13 @@ class TrackingService:
 
         self._update_session_counters(session, payload)
 
-        await self.fraud_engine.score(self.db, session)
+        previous_verdict = session.verdict
+        await self.fraud_engine.score(
+            self.db,
+            session,
+            is_new_session=session_is_new,
+            previous_verdict=previous_verdict,
+        )
 
         await self.db.commit()
 
@@ -208,9 +277,23 @@ class TrackingService:
         )
         session = result.scalar_one_or_none()
         if session:
+            if session.google_campaign_id is None:
+                matched_campaign = await self._resolve_google_campaign(
+                    organization_id=website.organization_id,
+                    first_event=first_event,
+                )
+                if matched_campaign is not None:
+                    session.google_campaign_id = matched_campaign.id
             return session, False
 
         ip_data = await self.ip_intel.lookup(client_ip)
+        matched_campaign = await self._resolve_google_campaign(
+            organization_id=website.organization_id,
+            first_event=first_event,
+        )
+        user_agent = request.headers.get("user-agent") or ""
+        is_google_ads_traffic = self._is_google_ads_traffic(first_event)
+        language = first_event.language or request.headers.get("accept-language", "").split(",")[0].strip() or None
 
         session = Session(
             organization_id=website.organization_id,
@@ -218,6 +301,7 @@ class TrackingService:
             visitor_id=visitor.id,
             session_token=first_event.session_token,
             gclid=first_event.gclid,
+            google_campaign_id=matched_campaign.id if matched_campaign is not None else None,
             utm_source=first_event.utm_source,
             utm_medium=first_event.utm_medium,
             utm_campaign=first_event.utm_campaign,
@@ -235,7 +319,13 @@ class TrackingService:
             is_proxy=ip_data.get("is_proxy", False),
             is_tor=ip_data.get("is_tor", False),
             is_datacenter=ip_data.get("is_datacenter", False),
-            user_agent=request.headers.get("user-agent"),
+            device=self._detect_device(user_agent, first_event.payload),
+            browser=self._detect_browser(user_agent),
+            os=self._detect_os(user_agent),
+            language=language,
+            timezone=first_event.timezone,
+            user_agent=user_agent or None,
+            extra_signals=self._build_extra_signals(first_event, is_google_ads_traffic),
             system_verdict=Verdict.SAFE,
             verdict=Verdict.SAFE,
         )
@@ -256,6 +346,45 @@ class TrackingService:
             if not existing:
                 raise
             return existing, False
+
+    async def _resolve_google_campaign(
+        self,
+        *,
+        organization_id,
+        first_event,
+    ) -> GoogleCampaign | None:
+        if not self._is_google_ads_traffic(first_event):
+            return None
+
+        result = await self.db.execute(
+            select(GoogleCampaign)
+            .join(GoogleConnection, GoogleConnection.id == GoogleCampaign.connection_id)
+            .where(
+                GoogleConnection.organization_id == organization_id,
+                GoogleConnection.is_active.is_(True),
+                GoogleCampaign.status != CampaignStatus.REMOVED,
+            )
+            .order_by(GoogleConnection.created_at.desc(), GoogleCampaign.name.asc())
+        )
+        campaigns = result.scalars().all()
+        if not campaigns:
+            return None
+
+        explicit_campaign_id = self._normalize_campaign_value(first_event.campaign_id)
+        if explicit_campaign_id:
+            for campaign in campaigns:
+                if self._normalize_campaign_value(campaign.campaign_id) == explicit_campaign_id:
+                    return campaign
+
+        utm_campaign = self._normalize_campaign_value(first_event.utm_campaign)
+        if utm_campaign:
+            for campaign in campaigns:
+                if self._normalize_campaign_value(campaign.campaign_id) == utm_campaign:
+                    return campaign
+                if self._normalize_campaign_value(campaign.name) == utm_campaign:
+                    return campaign
+
+        return None
 
     def _update_session_counters(
         self, session: Session, payload: TrackingBatchIn

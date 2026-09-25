@@ -61,8 +61,20 @@ class CampaignOut(BaseModel):
     status: str
     protection_enabled: bool
     exclusion_count: int
+    supports_ip_exclusion: bool = True
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CampaignSyncSummary(BaseModel):
+    synced: int
+    created: int
+    updated: int
+    removed: int
+
+
+class UpdateCampaignProtectionIn(BaseModel):
+    protection_enabled: bool
 
 
 class ExclusionIn(BaseModel):

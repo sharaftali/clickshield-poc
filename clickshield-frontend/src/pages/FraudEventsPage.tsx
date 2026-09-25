@@ -11,6 +11,7 @@ export default function FraudEventsPage() {
   const { data: events, isLoading, refetch, isFetching } = useQuery<DashboardFraudEvent[]>({
     queryKey: ["dashboard", "fraudEvents", limit],
     queryFn: () => dashboardApi.fraudEvents(limit),
+    refetchInterval: 10000,
   });
 
   const filteredEvents = useMemo(() => {

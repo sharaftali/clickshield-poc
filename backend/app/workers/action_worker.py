@@ -1,13 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.google_ads_adapter import GoogleAdsAdapter
-from app.core.config import settings
 from app.core.crypto import decrypt
 from app.models import (
     ActionStatus,
@@ -15,6 +13,7 @@ from app.models import (
     Exclusion,
     ExclusionStatus,
     GoogleConnection,
+    IPReputation,
     Platform,
     PlatformAction,
 )
@@ -115,6 +114,7 @@ class ActionWorker:
                     exclusion.api_request_id = result_payload.api_request_id
                     exclusion.submitted_at = datetime.now(timezone.utc)
                     exclusion.reason = exclusion.reason or "High-risk fraudulent session flagged by Click Shield"
+                    await self._increment_blocked_count(db, str(exclusion.ip_address))
                 else:
                     exclusion.status = ExclusionStatus.REMOVED
                     exclusion.removed_at = datetime.now(timezone.utc)
@@ -188,3 +188,16 @@ class ActionWorker:
             )
             exclusion.reason = reason_text
             exclusion.api_request_id = action.id.hex[:12]
+
+    async def _increment_blocked_count(
+        self,
+        db: AsyncSession,
+        ip_address: str,
+    ) -> None:
+        result = await db.execute(
+            select(IPReputation).where(IPReputation.ip == ip_address)
+        )
+        reputation = result.scalar_one_or_none()
+        if reputation is None:
+            return
+        reputation.blocked_count = int(reputation.blocked_count or 0) + 1

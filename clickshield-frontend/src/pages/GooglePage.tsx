@@ -1,11 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { googleApi } from "../services/apiService";
 import { useAuthStore } from "../store/authStore";
-import type { GoogleConnectionOut, GoogleAccountOut, SelectCustomerIn } from "../types/api";
+import type {
+  CampaignSyncSummary,
+  GoogleAccountOut,
+  GoogleCampaignOut,
+  GoogleConnectionOut,
+  SelectCustomerIn,
+} from "../types/api";
 
 export default function GooglePage() {
   const accessToken = useAuthStore((s) => s.accessToken);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [selectNotif, setSelectNotif] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const {
@@ -28,16 +36,65 @@ export default function GooglePage() {
     queryFn: googleApi.accounts,
   });
 
+  const {
+    data: campaigns,
+    isLoading: campaignsLoading,
+    refetch: refetchCampaigns,
+    isFetching: campaignsFetching,
+  } = useQuery<GoogleCampaignOut[]>({
+    queryKey: ["google", "campaigns"],
+    queryFn: googleApi.campaigns,
+  });
+
   const selectCustomerMutation = useMutation({
     mutationFn: (body: SelectCustomerIn) => googleApi.selectCustomer(body),
     onSuccess: () => {
-      setSelectNotif({ type: "success", message: "Customer account selected and linked successfully." });
+      setSelectNotif({ type: "success", message: "Customer account selected successfully. Sync campaigns to choose what ClickShield should protect." });
       refetchConn();
+      refetchCampaigns();
     },
     onError: (err: any) => {
       setSelectNotif({
         type: "error",
         message: err?.response?.data?.detail ?? "Failed to link customer account.",
+      });
+    },
+  });
+
+  const syncCampaignsMutation = useMutation({
+    mutationFn: googleApi.syncCampaigns,
+    onSuccess: (data: CampaignSyncSummary) => {
+      setSelectNotif({
+        type: "success",
+        message: `Campaign sync complete. ${data.synced} fetched, ${data.created} created, ${data.updated} updated, ${data.removed} marked removed.`,
+      });
+      refetchCampaigns();
+      refetchConn();
+    },
+    onError: (err: any) => {
+      setSelectNotif({
+        type: "error",
+        message: err?.response?.data?.detail ?? "Failed to sync campaigns from Google Ads.",
+      });
+    },
+  });
+
+  const campaignProtectionMutation = useMutation({
+    mutationFn: ({ campaignRowId, protectionEnabled }: { campaignRowId: string; protectionEnabled: boolean }) =>
+      googleApi.updateCampaignProtection(campaignRowId, protectionEnabled),
+    onSuccess: (_, variables) => {
+      setSelectNotif({
+        type: "success",
+        message: variables.protectionEnabled
+          ? "Campaign protection enabled. Fraudulent IP exclusions can be sent for this campaign."
+          : "Campaign protection disabled for this campaign.",
+      });
+      refetchCampaigns();
+    },
+    onError: (err: any) => {
+      setSelectNotif({
+        type: "error",
+        message: err?.response?.data?.detail ?? "Failed to update campaign protection.",
       });
     },
   });
@@ -58,20 +115,50 @@ export default function GooglePage() {
     selectCustomerMutation.mutate(body);
   };
 
-  const isBusy = connFetching || accFetching;
+  const hasSelectedCustomer = !!connections?.some((connection) => !!connection.customer_id);
+  const isBusy =
+    connFetching ||
+    accFetching ||
+    campaignsFetching ||
+    syncCampaignsMutation.isPending ||
+    campaignProtectionMutation.isPending;
+
+  useEffect(() => {
+    const status = searchParams.get("google_oauth_status");
+    const message = searchParams.get("google_oauth_message");
+    if (!status || !message) {
+      return;
+    }
+
+    setSelectNotif({
+      type: status === "success" ? "success" : "error",
+      message,
+    });
+
+    if (status === "success") {
+      refetchConn();
+      refetchAcc();
+      refetchCampaigns();
+    }
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("google_oauth_status");
+    nextParams.delete("google_oauth_message");
+    setSearchParams(nextParams, { replace: true });
+  }, [refetchAcc, refetchCampaigns, refetchConn, searchParams, setSearchParams]);
 
   return (
     <>
       <header className="topbar">
         <h1 className="topbar-title">Google Ads Integration</h1>
         <div className="topbar-actions">
-          <button className="btn btn-primary btn-sm" onClick={handleConnect}>
+          <button className="btn btn-primary btn-sm" onClick={handleConnect} disabled={!accessToken}>
             <GoogleIcon size={14} />
             Connect Google Ads
           </button>
           <button
             className="btn btn-secondary btn-sm"
-            onClick={() => { refetchConn(); refetchAcc(); }}
+            onClick={() => { refetchConn(); refetchAcc(); refetchCampaigns(); }}
             disabled={isBusy}
           >
             <RefreshIcon size={13} />
@@ -112,6 +199,12 @@ export default function GooglePage() {
             <strong>How it works:</strong> Click <em>Connect Google Ads</em> to authorize via OAuth. After connecting,
             select which Google Ads customer account should receive IP exclusions. ClickShield will then automatically
             block flagged IPs on your active campaigns.
+            {!accessToken && (
+              <>
+                {" "}
+                Sign in again if the connect button stays disabled.
+              </>
+            )}
           </div>
         </div>
 
@@ -236,6 +329,95 @@ export default function GooglePage() {
                           disabled={selectCustomerMutation.isPending}
                         >
                           {selectCustomerMutation.isPending ? "Linking..." : "Use this account"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card section-gap">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">Protected Campaign Selection</h2>
+              <div className="card-subtitle">
+                Sync campaigns from the selected Google Ads customer account, then enable protection only for the campaigns
+                that should receive IP exclusions.
+              </div>
+            </div>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => syncCampaignsMutation.mutate()}
+              disabled={!hasSelectedCustomer || isBusy}
+            >
+              {syncCampaignsMutation.isPending ? "Syncing campaigns..." : "Sync Campaigns"}
+            </button>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Campaign</th>
+                  <th>Campaign ID</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>IP Exclusion Support</th>
+                  <th>Protection</th>
+                </tr>
+              </thead>
+              <tbody>
+                {campaignsLoading ? (
+                  <tr>
+                    <td colSpan={6} className="empty-state">
+                      <div className="spinner" />
+                      <span>Loading campaigns...</span>
+                    </td>
+                  </tr>
+                ) : !hasSelectedCustomer ? (
+                  <tr>
+                    <td colSpan={6} className="empty-state">
+                      Select a Google Ads customer account first, then sync campaigns.
+                    </td>
+                  </tr>
+                ) : !campaigns || campaigns.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="empty-state">
+                      No campaigns synced yet. Click <strong>Sync Campaigns</strong> to load Google Ads campaigns.
+                    </td>
+                  </tr>
+                ) : (
+                  campaigns.map((campaign) => (
+                    <tr key={campaign.id}>
+                      <td style={{ fontWeight: 600 }}>{campaign.name}</td>
+                      <td className="text-mono">{campaign.campaign_id}</td>
+                      <td>{campaign.campaign_type}</td>
+                      <td>
+                        <span className={campaign.status === "ENABLED" ? "badge badge-active" : campaign.status === "PAUSED" ? "badge badge-monitor" : "badge badge-failed"}>
+                          {campaign.status}
+                        </span>
+                      </td>
+                      <td>
+                        {campaign.supports_ip_exclusion ? (
+                          <span className="badge badge-safe">Supported</span>
+                        ) : (
+                          <span className="badge badge-monitor">Not supported</span>
+                        )}
+                      </td>
+                      <td>
+                        <button
+                          className={`btn btn-sm ${campaign.protection_enabled ? "btn-primary" : "btn-secondary"}`}
+                          onClick={() =>
+                            campaignProtectionMutation.mutate({
+                              campaignRowId: campaign.id,
+                              protectionEnabled: !campaign.protection_enabled,
+                            })
+                          }
+                          disabled={!campaign.supports_ip_exclusion || campaignProtectionMutation.isPending}
+                        >
+                          {campaign.protection_enabled ? "Protection ON" : "Enable Protection"}
                         </button>
                       </td>
                     </tr>

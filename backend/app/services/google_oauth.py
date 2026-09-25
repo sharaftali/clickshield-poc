@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from app.models.enums import CampaignStatus, CampaignType
 from app.core.config import settings
 from app.schemas.google import GoogleAccountOut
 
@@ -139,3 +140,92 @@ async def list_accessible_customer_accounts(access_token: str) -> list[GoogleAcc
                 )
             )
     return accounts
+
+
+def _normalize_campaign_type(value: str | None) -> CampaignType | None:
+    mapping = {
+        "SEARCH": CampaignType.SEARCH,
+        "DISPLAY": CampaignType.DISPLAY,
+        "SHOPPING": CampaignType.SHOPPING,
+        "VIDEO": CampaignType.VIDEO,
+        "PERFORMANCE_MAX": CampaignType.PERFORMANCE_MAX,
+    }
+    return mapping.get((value or "").strip().upper())
+
+
+def _normalize_campaign_status(value: str | None) -> CampaignStatus:
+    mapping = {
+        "ENABLED": CampaignStatus.ENABLED,
+        "PAUSED": CampaignStatus.PAUSED,
+        "REMOVED": CampaignStatus.REMOVED,
+    }
+    return mapping.get((value or "").strip().upper(), CampaignStatus.PAUSED)
+
+
+async def list_google_campaigns(
+    *,
+    access_token: str,
+    customer_id: str,
+    login_customer_id: str | None = None,
+) -> list[dict[str, str | bool]]:
+    if not access_token or not customer_id:
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "developer-token": settings.GOOGLE_DEVELOPER_TOKEN or "",
+    }
+    if login_customer_id:
+        headers["login-customer-id"] = login_customer_id
+    headers = {key: value for key, value in headers.items() if value}
+
+    payload = {
+        "query": (
+            "SELECT "
+            "campaign.id, "
+            "campaign.name, "
+            "campaign.status, "
+            "campaign.advertising_channel_type "
+            "FROM campaign "
+            "ORDER BY campaign.name"
+        )
+    }
+    url = (
+        f"https://googleads.googleapis.com/{settings.GOOGLE_ADS_API_VERSION}/customers/"
+        f"{customer_id}/googleAds:searchStream"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code != 200:
+                logger.warning("Google Ads campaign listing failed: %s %s", resp.status_code, resp.text)
+                raise ValueError(f"Failed to fetch Google Ads campaigns: {resp.text}")
+            payload = resp.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Failed to fetch Google Ads campaigns: %s", exc)
+        raise ValueError("Failed to fetch Google Ads campaigns from Google.") from exc
+
+    campaigns: list[dict[str, str | bool]] = []
+    for batch in payload if isinstance(payload, list) else []:
+        for row in batch.get("results", []):
+            campaign = row.get("campaign") or {}
+            campaign_type = _normalize_campaign_type(campaign.get("advertisingChannelType"))
+            if campaign_type is None:
+                continue
+
+            campaign_id = str(campaign.get("id", "")).strip()
+            if not campaign_id.isdigit():
+                continue
+
+            campaigns.append(
+                {
+                    "campaign_id": campaign_id,
+                    "name": str(campaign.get("name") or f"Campaign {campaign_id}").strip(),
+                    "campaign_type": campaign_type.value,
+                    "status": _normalize_campaign_status(campaign.get("status")).value,
+                    "supports_ip_exclusion": campaign_type not in {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO},
+                }
+            )
+    return campaigns
