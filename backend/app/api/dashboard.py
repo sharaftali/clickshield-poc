@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.dependencies.auth import CurrentUser
-from app.models import Exclusion, FraudEvent, IPReputation, Session, Verdict
+from app.models import ClientVerdict, Exclusion, FraudEvent, Session, Verdict
 from app.schemas.dashboard import (
     DashboardFraudEvent,
     DashboardOverview,
     DashboardSessionSummary,
     DashboardTopIP,
+    SessionFeedbackIn,
 )
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
@@ -87,6 +90,37 @@ async def recent_sessions(
     return list(result.scalars().all())
 
 
+@router.patch("/sessions/{session_id}/feedback", response_model=DashboardSessionSummary)
+async def set_session_feedback(
+    session_id: uuid.UUID,
+    payload: SessionFeedbackIn,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> Session:
+    result = await db.execute(
+        select(Session)
+        .where(
+            Session.id == session_id,
+            Session.organization_id == current_user.organization_id,
+        )
+        .limit(1)
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found for this organization.",
+        )
+
+    session.client_verdict = payload.client_verdict
+    session.final_label = (
+        Verdict.FRAUD if payload.client_verdict == ClientVerdict.FRAUD else Verdict.SAFE
+    )
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
 @router.get("/fraud-events", response_model=list[DashboardFraudEvent])
 async def recent_fraud_events(
     current_user: CurrentUser,
@@ -110,20 +144,24 @@ async def top_ip_reputation(
 ) -> list[dict[str, object]]:
     result = await db.execute(
         select(
-            IPReputation.ip,
-            IPReputation.risk_score,
-            IPReputation.confidence,
-            IPReputation.total_sessions,
-            IPReputation.fraud_sessions,
+            Session.ip_address,
+            func.max(Session.risk_score),
+            func.max(Session.confidence_score),
+            func.count(Session.id),
+            func.sum(case((Session.verdict == Verdict.FRAUD, 1), else_=0)),
         )
-        .where(IPReputation.ip.is_not(None))
-        .order_by(IPReputation.risk_score.desc(), IPReputation.confidence.desc())
+        .where(
+            Session.organization_id == current_user.organization_id,
+            Session.ip_address.is_not(None),
+        )
+        .group_by(Session.ip_address)
+        .order_by(func.max(Session.risk_score).desc(), func.max(Session.confidence_score).desc())
         .limit(limit)
     )
     rows = result.all()
     return [
         {
-            "ip": row[0],
+            "ip": str(row[0]),
             "risk_score": int(row[1] or 0),
             "confidence": int(row[2] or 0),
             "total_sessions": int(row[3] or 0),

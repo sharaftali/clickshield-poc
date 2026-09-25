@@ -11,6 +11,7 @@ export default function TopIPsPage() {
   const { data: topIPs, isLoading, refetch, isFetching } = useQuery<DashboardTopIP[]>({
     queryKey: ["dashboard", "topIPs", limit],
     queryFn: () => dashboardApi.topIPs(limit),
+    refetchInterval: 10000,
   });
 
   const filteredIPs = useMemo(() => {

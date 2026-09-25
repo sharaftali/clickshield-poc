@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    CampaignType,
     Exclusion,
     FraudEvent,
     GoogleCampaign,
@@ -59,6 +59,10 @@ async def enqueue_high_risk_exclusions(
         )
         campaign = campaign_result.scalar_one_or_none()
         if campaign is None:
+            continue
+        if not campaign.protection_enabled:
+            continue
+        if campaign.campaign_type in {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO}:
             continue
 
         customer_id = ""

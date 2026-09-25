@@ -8,21 +8,25 @@ export default function OverviewPage() {
   const { data: overview, isLoading: overviewLoading, refetch: refetchOverview } = useQuery<DashboardOverview>({
     queryKey: ["dashboard", "overview"],
     queryFn: dashboardApi.overview,
+    refetchInterval: 10000,
   });
 
   const { data: sessions, isLoading: sessionsLoading } = useQuery<DashboardSessionSummary[]>({
     queryKey: ["dashboard", "sessions", 6],
     queryFn: () => dashboardApi.sessions(6),
+    refetchInterval: 10000,
   });
 
   const { data: fraudEvents, isLoading: fraudLoading } = useQuery<DashboardFraudEvent[]>({
     queryKey: ["dashboard", "fraudEvents", 6],
     queryFn: () => dashboardApi.fraudEvents(6),
+    refetchInterval: 10000,
   });
 
   const { data: topIPs, isLoading: ipsLoading } = useQuery<DashboardTopIP[]>({
     queryKey: ["dashboard", "topIPs", 5],
     queryFn: () => dashboardApi.topIPs(5),
+    refetchInterval: 10000,
   });
 
   const statItems = [

@@ -12,7 +12,7 @@ export default function RegisterPage() {
   const [orgName, setOrgName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [protectionMode, setProtectionMode] = useState<ProtectionMode>("BALANCED");
+  const [protectionMode, setProtectionMode] = useState<ProtectionMode>("balanced");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -147,9 +147,10 @@ export default function RegisterPage() {
               value={protectionMode}
               onChange={(e) => setProtectionMode(e.target.value as ProtectionMode)}
             >
-              <option value="BALANCED">Balanced (Recommended - Optimal Detection &amp; Safety)</option>
-              <option value="STRICT">Strict (Aggressive Instant Blocking)</option>
-              <option value="PASSIVE">Passive (Monitoring Only, No Auto Exclusions)</option>
+              <option value="balanced">Balanced (Recommended - Optimal Detection &amp; Safety)</option>
+              <option value="aggressive">Aggressive (Faster Automated Protection)</option>
+              <option value="conservative">Conservative (Lower False Positive Risk)</option>
+              <option value="custom">Custom (Reserved for future advanced controls)</option>
             </select>
           </div>
 

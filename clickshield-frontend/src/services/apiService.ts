@@ -6,8 +6,11 @@ import type {
   DashboardOverview,
   DashboardSessionSummary,
   DashboardTopIP,
+  ClientVerdict,
   GoogleAccountOut,
+  GoogleCampaignOut,
   GoogleConnectionOut,
+  CampaignSyncSummary,
   SelectCustomerIn,
   LoginRequest,
   RegisterRequest,
@@ -49,6 +52,14 @@ export const dashboardApi = {
   sessions: (limit = 20) =>
     api
       .get<DashboardSessionSummary[]>("/dashboard/sessions", { params: { limit } })
+      .then((r) => r.data),
+
+  /** PATCH /api/v1/dashboard/sessions/:id/feedback */
+  setSessionFeedback: (sessionId: string, clientVerdict: ClientVerdict) =>
+    api
+      .patch<DashboardSessionSummary>(`/dashboard/sessions/${sessionId}/feedback`, {
+        client_verdict: clientVerdict,
+      })
       .then((r) => r.data),
 
   /** GET /api/v1/dashboard/fraud-events?limit=N */
@@ -107,6 +118,22 @@ export const googleApi = {
    */
   selectCustomer: (body: SelectCustomerIn) =>
     api.post<GoogleConnectionOut>("/google/select-customer", body).then((r) => r.data),
+
+  /** GET /api/v1/google/campaigns — list synced campaigns for the selected customer */
+  campaigns: () =>
+    api.get<GoogleCampaignOut[]>("/google/campaigns").then((r) => r.data),
+
+  /** POST /api/v1/google/campaigns/sync — sync campaigns from Google Ads */
+  syncCampaigns: () =>
+    api.post<CampaignSyncSummary>("/google/campaigns/sync").then((r) => r.data),
+
+  /** PATCH /api/v1/google/campaigns/:id/protection — enable or disable protection */
+  updateCampaignProtection: (campaignRowId: string, protectionEnabled: boolean) =>
+    api
+      .patch<GoogleCampaignOut>(`/google/campaigns/${campaignRowId}/protection`, {
+        protection_enabled: protectionEnabled,
+      })
+      .then((r) => r.data),
 
   /**
    * GET /api/v1/google/connect

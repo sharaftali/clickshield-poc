@@ -10,6 +10,7 @@ export default function ProtectionPage() {
   const { data: exclusions, isLoading, refetch, isFetching } = useQuery<ProtectionExclusionResponse[]>({
     queryKey: ["protection", "exclusions"],
     queryFn: protectionApi.exclusions,
+    refetchInterval: 10000,
   });
 
   const dryRunMutation = useMutation({

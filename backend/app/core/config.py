@@ -96,8 +96,12 @@ class Settings(BaseSettings):
 
     # ---- Dashboard / API CORS ----
     API_CORS_ORIGINS: str = Field(
-        default="http://localhost:3000",
+        default="http://localhost:5173",
         description="Comma-separated origins for the dashboard frontend",
+    )
+    FRONTEND_APP_URL: str = Field(
+        default="http://localhost:5173",
+        description="Public dashboard frontend URL used for OAuth return redirects",
     )
 
     # ---- Fraud Engine Defaults (spec §24, §28) ----

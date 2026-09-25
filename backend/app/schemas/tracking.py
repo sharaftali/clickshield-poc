@@ -17,11 +17,14 @@ class TrackingEventIn(BaseModel):
     timestamp: datetime
     # Attribution
     gclid: str | None = Field(default=None, max_length=255)
+    campaign_id: str | None = Field(default=None, max_length=50)
     utm_source: str | None = None
     utm_medium: str | None = None
     utm_campaign: str | None = None
     utm_term: str | None = None
     utm_content: str | None = None
+    language: str | None = Field(default=None, max_length=20)
+    timezone: str | None = Field(default=None, max_length=64)
     referrer: str | None = None
     # Behavioral payload (scroll depth, click coords, etc.)
     payload: dict[str, Any] | None = None

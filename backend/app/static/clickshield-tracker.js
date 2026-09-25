@@ -27,9 +27,26 @@
     return value;
   }
 
+  function buildClientContext() {
+    const timezone = window.Intl && typeof window.Intl.DateTimeFormat === 'function'
+      ? window.Intl.DateTimeFormat().resolvedOptions().timeZone || null
+      : null;
+
+    return {
+      client_language: navigator.language || null,
+      client_timezone: timezone,
+      screen_width: window.screen && typeof window.screen.width === 'number' ? window.screen.width : null,
+      screen_height: window.screen && typeof window.screen.height === 'number' ? window.screen.height : null,
+      viewport_width: typeof window.innerWidth === 'number' ? window.innerWidth : null,
+      viewport_height: typeof window.innerHeight === 'number' ? window.innerHeight : null,
+      touch_points: typeof navigator.maxTouchPoints === 'number' ? navigator.maxTouchPoints : 0,
+    };
+  }
+
   function buildEvent(eventType, payload, customMeta) {
     const config = getConfig();
     const params = new URLSearchParams(window.location.search);
+    const clientContext = buildClientContext();
 
     return {
       site_token: config.siteToken,
@@ -47,13 +64,16 @@
       page_url: window.location.href,
       timestamp: new Date().toISOString(),
       gclid: params.get('gclid') || customMeta?.gclid || null,
+      campaign_id: params.get('campaign_id') || params.get('campaignid') || params.get('utm_id') || customMeta?.campaign_id || null,
       utm_source: params.get('utm_source') || customMeta?.utm_source || null,
       utm_medium: params.get('utm_medium') || customMeta?.utm_medium || null,
       utm_campaign: params.get('utm_campaign') || customMeta?.utm_campaign || null,
       utm_term: params.get('utm_term') || customMeta?.utm_term || null,
       utm_content: params.get('utm_content') || customMeta?.utm_content || null,
+      language: customMeta?.language || clientContext.client_language,
+      timezone: customMeta?.timezone || clientContext.client_timezone,
       referrer: document.referrer || customMeta?.referrer || null,
-      payload: payload || {},
+      payload: { ...clientContext, ...(payload || {}) },
     };
   }
 

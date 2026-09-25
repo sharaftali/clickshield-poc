@@ -1,7 +1,8 @@
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
-export type ProtectionMode = "STRICT" | "BALANCED" | "PASSIVE";
+export type ProtectionMode = "conservative" | "balanced" | "aggressive" | "custom";
 export type UserRole = "OWNER" | "ADMIN" | "MEMBER";
+export type ClientVerdict = "fraud" | "legitimate";
 
 export interface TokenPair {
   access_token: string;
@@ -83,6 +84,8 @@ export interface DashboardSessionSummary {
   click_count: number;
   is_vpn: boolean;
   is_proxy: boolean;
+  client_verdict: ClientVerdict | null;
+  final_label: Verdict | null;
 }
 
 export interface DashboardFraudEvent {
@@ -155,6 +158,24 @@ export interface SelectCustomerIn {
   customer_id: string;
   login_customer_id?: string | null;
   google_account_email?: string | null;
+}
+
+export interface GoogleCampaignOut {
+  id: string;
+  campaign_id: string;
+  name: string;
+  campaign_type: string;
+  status: string;
+  protection_enabled: boolean;
+  exclusion_count: number;
+  supports_ip_exclusion: boolean;
+}
+
+export interface CampaignSyncSummary {
+  synced: number;
+  created: number;
+  updated: number;
+  removed: number;
 }
 
 // ─── Organization ─────────────────────────────────────────────────────────────
