@@ -13,6 +13,10 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models.organization import User
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 TokenType = Literal["access", "refresh"]
 
 
@@ -52,11 +56,13 @@ def decode_token(token: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except jwt.ExpiredSignatureError as exc:  # pragma: no cover - exercised via runtime validation
+        logger.warning("Token has expired." + str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired.",
         ) from exc
     except jwt.InvalidTokenError as exc:
+        logger.warning("Invalid authentication token." + str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token.",

@@ -22,11 +22,15 @@ logger = logging.getLogger(__name__)
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
-GOOGLE_CUSTOMERS_URL = "https://googleads.googleapis.com/v18/customers:listAccessibleCustomers"
 
 # Scopes required for Google Ads API
 GOOGLE_ADS_SCOPE = "https://www.googleapis.com/auth/adwords"
 OPENID_SCOPE = "openid email"
+
+
+def _google_ads_api_version() -> str:
+    version = str(settings.GOOGLE_ADS_API_VERSION).strip()
+    return version if version.startswith("v") else f"v{version}"
 
 
 def build_authorization_url(state: str) -> str:
@@ -58,16 +62,20 @@ async def exchange_code_for_tokens(code: str) -> dict:
         "grant_type": "authorization_code",
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(GOOGLE_TOKEN_URL, data=data)
-        if resp.status_code != 200:
-            logger.error(
-                "Google token exchange failed: %s %s",
-                resp.status_code,
-                resp.text,
-            )
-            raise ValueError(f"Google OAuth failed: {resp.text}")
-        payload = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(GOOGLE_TOKEN_URL, data=data)
+            if resp.status_code != 200:
+                logger.error(
+                    "Google token exchange failed: %s %s",
+                    resp.status_code,
+                    resp.text,
+                )
+                raise ValueError(f"Google OAuth failed: {resp.text}")
+            payload = resp.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Google token exchange network failure: %s", exc)
+        raise ValueError("Google OAuth token exchange failed due to a network error.") from exc
 
     if "refresh_token" not in payload and "access_token" not in payload:
         raise ValueError("Google OAuth response did not include a usable token pair.")
@@ -84,11 +92,15 @@ async def refresh_access_token(refresh_token: str) -> dict:
         "grant_type": "refresh_token",
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(GOOGLE_TOKEN_URL, data=data)
-        if resp.status_code != 200:
-            raise ValueError(f"Failed to refresh Google OAuth token: {resp.text}")
-        return resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(GOOGLE_TOKEN_URL, data=data)
+            if resp.status_code != 200:
+                raise ValueError(f"Failed to refresh Google OAuth token: {resp.text}")
+            return resp.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Google token refresh network failure: %s", exc)
+        raise ValueError("Failed to refresh Google OAuth token due to a network error.") from exc
 
 
 async def fetch_user_email(access_token: str) -> str | None:
@@ -113,10 +125,14 @@ async def list_accessible_customer_accounts(access_token: str) -> list[GoogleAcc
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
+    customers_url = (
+        f"https://googleads.googleapis.com/{_google_ads_api_version()}/"
+        "customers:listAccessibleCustomers"
+    )
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(GOOGLE_CUSTOMERS_URL, headers=headers)
+            resp = await client.get(customers_url, headers=headers)
             if resp.status_code != 200:
                 logger.warning("Google ads customer listing failed: %s %s", resp.status_code, resp.text)
                 return []
@@ -192,7 +208,7 @@ async def list_google_campaigns(
         )
     }
     url = (
-        f"https://googleads.googleapis.com/{settings.GOOGLE_ADS_API_VERSION}/customers/"
+        f"https://googleads.googleapis.com/{_google_ads_api_version()}/customers/"
         f"{customer_id}/googleAds:searchStream"
     )
 

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # ---- Token Encryption (spec §63) ----
     # Use a stable local dev key; override in production with a generated Fernet key.
     TOKEN_ENCRYPTION_KEY: str = Field(
-        default="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+        default="cAtLjrcYUAo7VMkGP1GscEXLFY-KfbIGS3fO_oYoBjg=",
         description="Fernet key used to encrypt Google OAuth refresh tokens at rest",
     )
 
