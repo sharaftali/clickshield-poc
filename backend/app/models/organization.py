@@ -33,6 +33,12 @@ class Organization(Base, TimestampMixin):
     google_connections = relationship(
         "GoogleConnection", back_populates="organization"
     )
+    fraud_model_state = relationship(
+        "FraudModelState",
+        back_populates="organization",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
 class User(Base, TimestampMixin):

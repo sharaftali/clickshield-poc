@@ -14,6 +14,7 @@ from app.models.enums import (
     Verdict,
 )
 from app.models.organization import Organization, User
+from app.models.ml import FraudModelState
 from app.models.website import Website
 from app.models.google import GoogleCampaign, GoogleConnection
 from app.models.traffic import Event, Session, Visitor
@@ -43,6 +44,7 @@ __all__ = [
     "Website",
     "GoogleConnection",
     "GoogleCampaign",
+    "FraudModelState",
     "Visitor",
     "Session",
     "Event",

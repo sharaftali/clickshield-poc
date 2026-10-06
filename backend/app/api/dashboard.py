@@ -16,6 +16,7 @@ from app.schemas.dashboard import (
     DashboardTopIP,
     SessionFeedbackIn,
 )
+from app.services.fraud_ml import FraudMLService
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
@@ -116,6 +117,7 @@ async def set_session_feedback(
     session.final_label = (
         Verdict.FRAUD if payload.client_verdict == ClientVerdict.FRAUD else Verdict.SAFE
     )
+    await FraudMLService().learn_from_feedback(db, session)
     await db.commit()
     await db.refresh(session)
     return session
