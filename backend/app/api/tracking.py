@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.client_ip import ClientIPError, resolve_client_ip
 from app.core.database import get_db
 from app.schemas.tracking import TrackingBatchIn, TrackingResponse
 from app.services.tracking_service import TrackingService
@@ -28,19 +29,13 @@ async def track_events(
     Public endpoint — called by the JS tracking script.
     No auth. Rate-limited by IP (handled in middleware later).
     """
-    # Real client IP — respect X-Forwarded-For behind a proxy
-    forwarded = request.headers.get("x-forwarded-for")
-    client_ip = (
-        forwarded.split(",")[0].strip()
-        if forwarded
-        else (request.client.host if request.client else None)
-    )
-
-    if not client_ip:
+    # Real client IP — X-Forwarded-For is only honoured from trusted proxies
+    try:
+        client_ip = resolve_client_ip(request)
+    except ClientIPError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unable to determine client IP",
-        )
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     service = TrackingService(db)
     try:

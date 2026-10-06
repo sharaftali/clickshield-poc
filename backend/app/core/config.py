@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import Field
+import ipaddress
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -94,6 +96,14 @@ class Settings(BaseSettings):
         description="Comma-separated origins allowed to POST to /track",
     )
 
+    # ---- Client IP resolution (spec §13, §62) ----
+    # X-Forwarded-For is only honoured when the direct peer is in one of these
+    # networks. Empty = trust nobody and always use the socket peer address.
+    TRUSTED_PROXY_CIDRS: str = Field(
+        default="",
+        description="Comma-separated CIDRs of our own proxies/load balancers, e.g. '10.0.0.0/8,172.16.0.0/12'",
+    )
+
     # ---- Dashboard / API CORS ----
     API_CORS_ORIGINS: str = Field(
         default="http://localhost:5173",
@@ -127,6 +137,19 @@ class Settings(BaseSettings):
     # ---- Data Retention (spec §79) ----
     RAW_EVENTS_RETENTION_DAYS: int = 30
     SESSIONS_RETENTION_DAYS: int = 90
+
+    @field_validator("TRUSTED_PROXY_CIDRS")
+    @classmethod
+    def validate_trusted_proxy_cidrs(cls, value: str) -> str:
+        # Fail at startup on a typo rather than silently trusting nothing.
+        for item in value.split(","):
+            item = item.strip()
+            if item:
+                try:
+                    ipaddress.ip_network(item, strict=False)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid CIDR in TRUSTED_PROXY_CIDRS: {item!r}") from exc
+        return value
 
 
 settings = Settings()
