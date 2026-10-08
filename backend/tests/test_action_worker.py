@@ -22,7 +22,8 @@ from app.models import (
     PlatformAction,
 )
 from app.services.google_oauth import GoogleAuthError, classify_token_error
-from app.services.protection_service import enqueue_high_risk_exclusions
+from app.models import Verdict
+from app.services.protection_service import enqueue_exclusion_for_session
 from app.workers import action_worker as worker_module
 from app.workers.action_worker import (
     ActionWorker,
@@ -37,6 +38,22 @@ CID = "1234567890"
 CRITERION = f"customers/{CID}/campaignCriteria/555~777"
 
 
+class StubDB:
+    """Collects audit rows; campaign lookups find nothing (no capacity rebalance)."""
+
+    def __init__(self):
+        self.added = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def execute(self, stmt):
+        return SimpleNamespace(first=lambda: None, scalar_one_or_none=lambda: None)
+
+    async def flush(self):
+        pass
+
+
 @dataclass
 class Env:
     worker: ActionWorker
@@ -49,8 +66,13 @@ class Env:
     adapter_result: GoogleAdsApiResult | None = None
     token_error: Exception | None = None
 
+    db: "StubDB" = field(default_factory=lambda: StubDB())
+
     async def run(self) -> str:
-        return await self.worker._process_action(None, self.action)
+        return await self.worker._process_action(self.db, self.action)
+
+    def audit(self, action: str) -> list:
+        return [row for row in self.db.added if getattr(row, "action", None) == action]
 
 
 @pytest.fixture
@@ -315,6 +337,9 @@ class ClaimDB:
     async def commit(self):
         self.commits += 1
 
+    async def rollback(self):
+        pass
+
 
 async def test_process_pending_claims_each_action_once(env, monkeypatch):
     env.adapter_result = GoogleAdsApiResult(ok=True, resource_name=CRITERION)
@@ -406,29 +431,22 @@ def test_connection_lookup_queries_are_org_scoped():
 
 
 async def test_enqueue_skips_connection_without_valid_customer():
-    org_id = uuid.uuid4()
-    fraud = SimpleNamespace(id=uuid.uuid4(), organization_id=org_id, google_campaign_id=uuid.uuid4(),
-                            ip_address="203.0.113.7", risk_score=95, confidence_score=95)
+    fraud = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4(), google_campaign_id=uuid.uuid4(),
+                            ip_address="203.0.113.7", risk_score=95, confidence_score=95, verdict=Verdict.FRAUD)
     campaign = SimpleNamespace(id=fraud.google_campaign_id, campaign_id="555", protection_enabled=True,
                                campaign_type=None)
     connection = SimpleNamespace(id=uuid.uuid4(), customer_id="")
-    results = [
-        SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [fraud])),
-        SimpleNamespace(first=lambda: (campaign, connection)),
-    ]
 
     class DB:
         added = []
 
         async def execute(self, stmt):
-            return results.pop(0)
+            return SimpleNamespace(first=lambda: (campaign, connection))
 
         def add(self, obj):
             self.added.append(obj)
 
-        async def commit(self):
-            pass
-
     db = DB()
-    assert await enqueue_high_risk_exclusions(db, organization_id=org_id) == []
+    result = await enqueue_exclusion_for_session(db, fraud)
+    assert result.outcome == "no_customer" and result.actions == []
     assert db.added == []

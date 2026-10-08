@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -16,7 +16,16 @@ from app.core.crypto import decrypt, encrypt
 from app.core.database import get_db
 from app.core.security import decode_token, get_user_from_token
 from app.dependencies.auth import CurrentUser
-from app.models import CampaignStatus, CampaignType, GoogleCampaign, GoogleConnection, Organization
+from app.models import (
+    AuditResult,
+    CampaignStatus,
+    CampaignType,
+    Exclusion,
+    ExclusionStatus,
+    GoogleCampaign,
+    GoogleConnection,
+    Organization,
+)
 from app.schemas.google import (
     CampaignOut,
     CampaignSyncSummary,
@@ -25,9 +34,13 @@ from app.schemas.google import (
     SelectCustomerIn,
     UpdateCampaignProtectionIn,
 )
+from app.services import audit_service
+from app.services.audit_service import AuditAction
+from app.services.exclusion_capacity import campaign_limit
 from app.services.google_oauth import (
     GoogleAuthError,
     build_authorization_url,
+    count_ip_exclusions_by_campaign,
     exchange_code_for_tokens,
     fetch_user_email,
     generate_state_token,
@@ -99,6 +112,8 @@ def _campaign_supports_ip_exclusion(campaign_type: CampaignType) -> bool:
 
 
 def _to_campaign_out(campaign: GoogleCampaign) -> CampaignOut:
+    limit = campaign_limit()
+    used = int(campaign.exclusion_count or 0) + int(campaign.external_exclusion_count or 0)
     return CampaignOut(
         id=campaign.id,
         campaign_id=campaign.campaign_id,
@@ -107,7 +122,25 @@ def _to_campaign_out(campaign: GoogleCampaign) -> CampaignOut:
         status=campaign.status.value,
         protection_enabled=campaign.protection_enabled,
         exclusion_count=campaign.exclusion_count,
+        external_exclusion_count=campaign.external_exclusion_count,
+        exclusion_used=used,
+        exclusion_limit=limit,
         supports_ip_exclusion=_campaign_supports_ip_exclusion(campaign.campaign_type),
+    )
+
+
+def _audit_connect_failure(db: AsyncSession, pending: dict[str, Any] | None, message: str, request: Request) -> None:
+    organization_id = (pending or {}).get("organization_id")
+    user_id = (pending or {}).get("user_id")
+    audit_service.record(
+        db,
+        action=AuditAction.GOOGLE_CONNECT,
+        result=AuditResult.FAILED,
+        organization_id=uuid.UUID(organization_id) if organization_id else None,
+        user_id=uuid.UUID(user_id) if user_id else None,
+        resource_type="google_connection",
+        request=request,
+        error=message,
     )
 
 
@@ -130,6 +163,7 @@ async def google_connect(
 
 @router.get("/callback")
 async def google_callback(
+    request: Request,
     code: str = Query(...),
     state: str = Query(...),
     db: AsyncSession = Depends(get_db),
@@ -137,6 +171,8 @@ async def google_callback(
     """Complete the OAuth flow and store encrypted refresh token for the selected organization."""
     pending = _pending_states.get(state)
     if not pending:
+        _audit_connect_failure(db, None, "Invalid or expired OAuth state", request)
+        await db.commit()
         return RedirectResponse(
             _google_frontend_redirect(
                 "error",
@@ -159,6 +195,8 @@ async def google_callback(
     try:
         tokens = await exchange_code_for_tokens(code)
     except ValueError as exc:
+        _audit_connect_failure(db, pending, str(exc), request)
+        await db.commit()
         return RedirectResponse(
             _google_frontend_redirect("error", str(exc)),
             status_code=status.HTTP_302_FOUND,
@@ -167,6 +205,8 @@ async def google_callback(
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
     if not refresh_token:
+        _audit_connect_failure(db, pending, "Google did not return a refresh token", request)
+        await db.commit()
         return RedirectResponse(
             _google_frontend_redirect(
                 "error",
@@ -215,6 +255,18 @@ async def google_callback(
         connection.needs_reauth = False
         connection.auth_error = None
 
+    await db.flush()
+    audit_service.record(
+        db,
+        action=AuditAction.GOOGLE_CONNECT,
+        result=AuditResult.SUCCESS,
+        organization_id=org.id,
+        user_id=uuid.UUID(pending["user_id"]) if pending.get("user_id") else None,
+        resource_type="google_connection",
+        resource_id=connection.id,
+        request=request,
+        details={"email": email},
+    )
     await db.commit()
     await db.refresh(connection)
 
@@ -295,6 +347,7 @@ async def list_connections(
 @router.post("/select-customer", response_model=GoogleConnectionOut)
 async def select_customer(
     payload: SelectCustomerIn,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> GoogleConnection:
@@ -307,11 +360,27 @@ async def select_customer(
             detail="No active Google connection found for this organization. Please connect Google first.",
         )
 
+    previous_customer_id = connection.customer_id
     connection.customer_id = payload.customer_id
     connection.login_customer_id = payload.login_customer_id
     connection.google_account_email = payload.google_account_email or connection.google_account_email
     connection.is_active = True
 
+    audit_service.record(
+        db,
+        action=AuditAction.GOOGLE_SELECT_CUSTOMER,
+        result=AuditResult.SUCCESS,
+        organization_id=current_user.organization_id,
+        user_id=current_user.id,
+        resource_type="google_connection",
+        resource_id=connection.id,
+        request=request,
+        details={
+            "customer_id": payload.customer_id,
+            "login_customer_id": payload.login_customer_id,
+            "previous_customer_id": previous_customer_id or None,
+        },
+    )
     await db.commit()
     await db.refresh(connection)
     return connection
@@ -319,6 +388,7 @@ async def select_customer(
 
 @router.post("/campaigns/sync", response_model=CampaignSyncSummary)
 async def sync_campaigns(
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignSyncSummary:
@@ -329,6 +399,20 @@ async def sync_campaigns(
             detail="Select a Google Ads customer account before syncing campaigns.",
         )
 
+    def audit_sync(result: AuditResult, *, error: str | None = None, details: dict | None = None) -> None:
+        audit_service.record(
+            db,
+            action=AuditAction.GOOGLE_CAMPAIGN_SYNC,
+            result=result,
+            organization_id=current_user.organization_id,
+            user_id=current_user.id,
+            resource_type="google_connection",
+            resource_id=connection.id,
+            request=request,
+            details={"customer_id": connection.customer_id, **(details or {})},
+            error=error,
+        )
+
     try:
         refresh_token = decrypt(connection.refresh_token_encrypted)
         token_payload = await refresh_access_token(refresh_token)
@@ -337,7 +421,8 @@ async def sync_campaigns(
         if isinstance(exc, GoogleAuthError) and exc.permanent:
             connection.needs_reauth = True
             connection.auth_error = str(exc)[:1000]
-            await db.commit()
+        audit_sync(AuditResult.FAILED, error=str(exc))
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -356,6 +441,8 @@ async def sync_campaigns(
             login_customer_id=connection.login_customer_id,
         )
     except ValueError as exc:
+        audit_sync(AuditResult.FAILED, error=str(exc))
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -387,6 +474,7 @@ async def sync_campaigns(
                 protection_enabled=bool(remote_campaign["supports_ip_exclusion"]),
             )
             db.add(campaign)
+            existing_campaigns[campaign_id] = campaign
             created += 1
             continue
 
@@ -404,6 +492,16 @@ async def sync_campaigns(
             campaign.protection_enabled = False
             removed += 1
 
+    # IP exclusions the advertiser added by hand share the per-campaign limit (task 012).
+    external_counted = await _refresh_external_exclusion_counts(
+        db, connection, access_token, list(existing_campaigns.values())
+    )
+
+    audit_sync(
+        AuditResult.SUCCESS,
+        details={"synced": len(remote_campaigns), "created": created, "updated": updated,
+                 "removed": removed, "external_exclusions_counted": external_counted},
+    )
     await db.commit()
     return CampaignSyncSummary(
         synced=len(remote_campaigns),
@@ -411,6 +509,44 @@ async def sync_campaigns(
         updated=updated,
         removed=removed,
     )
+
+
+async def _refresh_external_exclusion_counts(
+    db: AsyncSession,
+    connection: GoogleConnection,
+    access_token: str,
+    campaigns: list[GoogleCampaign],
+) -> bool:
+    """external = IP exclusions in Google − Click Shield's ACTIVE ones. False if Google can't be read."""
+    try:
+        in_google = await count_ip_exclusions_by_campaign(
+            access_token=access_token,
+            customer_id=connection.customer_id,
+            login_customer_id=connection.login_customer_id,
+        )
+    except ValueError as exc:
+        logger.warning("Keeping previous external IP exclusion counts: %s", exc)
+        return False
+
+    await db.flush()
+    ours = dict(
+        (
+            await db.execute(
+                select(Exclusion.campaign_id, func.count())
+                .where(
+                    Exclusion.organization_id == connection.organization_id,
+                    Exclusion.google_customer_id == connection.customer_id,
+                    Exclusion.status == ExclusionStatus.ACTIVE,
+                )
+                .group_by(Exclusion.campaign_id)
+            )
+        ).all()
+    )
+    for campaign in campaigns:
+        campaign.external_exclusion_count = max(
+            0, in_google.get(campaign.campaign_id, 0) - int(ours.get(campaign.campaign_id, 0))
+        )
+    return True
 
 
 @router.get("/campaigns", response_model=list[CampaignOut])
@@ -438,6 +574,7 @@ async def list_campaigns(
 async def update_campaign_protection(
     campaign_row_id: uuid.UUID,
     payload: UpdateCampaignProtectionIn,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignOut:
@@ -463,7 +600,20 @@ async def update_campaign_protection(
             detail="This Google Ads campaign type does not support IP exclusions.",
         )
 
+    previous = campaign.protection_enabled
     campaign.protection_enabled = payload.protection_enabled
+    audit_service.record(
+        db,
+        action=AuditAction.CAMPAIGN_PROTECTION_TOGGLED,
+        result=AuditResult.SUCCESS,
+        organization_id=current_user.organization_id,
+        user_id=current_user.id,
+        resource_type="campaign",
+        resource_id=campaign.id,
+        request=request,
+        details={"campaign_id": campaign.campaign_id, "campaign_name": campaign.name,
+                 "protection_enabled": payload.protection_enabled, "previous": previous},
+    )
     await db.commit()
     await db.refresh(campaign)
     return _to_campaign_out(campaign)

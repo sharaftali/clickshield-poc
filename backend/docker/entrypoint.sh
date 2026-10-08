@@ -40,7 +40,8 @@ case "$role" in
             --no-proxy-headers
         ;;
     worker)
-        exec python -m app.workers.run
+        # arq: process_action jobs pushed by the API + a periodic sweep (retries, overflow, expiry)
+        exec arq app.workers.arq_worker.WorkerSettings
         ;;
     migrate)
         migrate

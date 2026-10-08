@@ -18,7 +18,11 @@ import type {
   TokenPair,
   OrganizationResponse,
   ProtectionExclusionResponse,
-  ProtectionQueueSummary,
+  ProtectionQueueStatus,
+  ProtectionAction,
+  ActionStatus,
+  AuditLogPage,
+  AuditLogQuery,
 } from "../types/api";
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -92,13 +96,26 @@ export const protectionApi = {
       .get<ProtectionExclusionResponse[]>("/protection/exclusions")
       .then((r) => r.data),
 
-  /** POST /api/v1/protection/reconcile — run full queue sync with Google Ads */
-  reconcile: () =>
-    api.post<ProtectionQueueSummary>("/protection/reconcile").then((r) => r.data),
+  /** GET /api/v1/protection/queue — counts for the automatic protection pipeline */
+  queue: () =>
+    api.get<ProtectionQueueStatus>("/protection/queue").then((r) => r.data),
 
-  /** POST /api/v1/protection/dry-run — evaluate candidates without submitting */
-  dryRun: () =>
-    api.post<{ queued: number }>("/protection/dry-run").then((r) => r.data),
+  /** GET /api/v1/protection/actions?status=&limit= — recent Google Ads actions */
+  actions: (status?: ActionStatus, limit = 20) =>
+    api
+      .get<ProtectionAction[]>("/protection/actions", { params: { status, limit } })
+      .then((r) => r.data),
+};
+
+// ─── Audit log ────────────────────────────────────────────────────────────────
+
+export const auditApi = {
+  /** GET /api/v1/audit-logs — tenant-scoped, newest first */
+  list: (query: AuditLogQuery = {}) =>
+    api.get<AuditLogPage>("/audit-logs", { params: query }).then((r) => r.data),
+
+  /** GET /api/v1/audit-logs/actions — action names present (filter options) */
+  actions: () => api.get<string[]>("/audit-logs/actions").then((r) => r.data),
 };
 
 // ─── Google Ads ───────────────────────────────────────────────────────────────

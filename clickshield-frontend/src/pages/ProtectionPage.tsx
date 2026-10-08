@@ -1,78 +1,42 @@
-import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { protectionApi } from "../services/apiService";
 import { exclusionBadge, riskColor } from "../lib/utils";
-import type { ProtectionExclusionResponse, ProtectionQueueSummary } from "../types/api";
+import type { ProtectionAction, ProtectionExclusionResponse, ProtectionQueueStatus } from "../types/api";
+
+// Exclusions are created automatically when a session is judged FRAUD and sent to
+// Google Ads by the background worker. This page only reports on that pipeline.
 
 export default function ProtectionPage() {
-  const [notification, setNotification] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
-
   const { data: exclusions, isLoading, refetch, isFetching } = useQuery<ProtectionExclusionResponse[]>({
     queryKey: ["protection", "exclusions"],
     queryFn: protectionApi.exclusions,
     refetchInterval: 10000,
   });
 
-  const dryRunMutation = useMutation({
-    mutationFn: protectionApi.dryRun,
-    onSuccess: (data) => {
-      setNotification({
-        type: "info",
-        message: `Dry run completed successfully. ${data.queued} candidate IP(s) evaluated and queued for exclusion.`,
-      });
-      refetch();
-    },
-    onError: (err: any) => {
-      setNotification({
-        type: "error",
-        message: err?.response?.data?.detail ?? "Failed to perform exclusion dry-run.",
-      });
-    },
+  const { data: queue, refetch: refetchQueue } = useQuery<ProtectionQueueStatus>({
+    queryKey: ["protection", "queue"],
+    queryFn: protectionApi.queue,
+    refetchInterval: 5000,
   });
 
-  const reconcileMutation = useMutation({
-    mutationFn: protectionApi.reconcile,
-    onSuccess: (data: ProtectionQueueSummary) => {
-      setNotification({
-        type: "success",
-        message: `Queue reconciliation complete: ${data.processed} processed, ${data.successful} synced with Google Ads, ${data.failed} failed, ${data.skipped} skipped.`,
-      });
-      refetch();
-    },
-    onError: (err: any) => {
-      setNotification({
-        type: "error",
-        message: err?.response?.data?.detail ?? "Failed to reconcile exclusion queue with Google Ads.",
-      });
-    },
+  const { data: actions, refetch: refetchActions } = useQuery<ProtectionAction[]>({
+    queryKey: ["protection", "actions"],
+    queryFn: () => protectionApi.actions(undefined, 15),
+    refetchInterval: 10000,
   });
 
-  const isBusy = dryRunMutation.isPending || reconcileMutation.isPending || isFetching;
+  const refreshAll = () => {
+    refetch();
+    refetchQueue();
+    refetchActions();
+  };
 
   return (
     <>
       <header className="topbar">
         <h1 className="topbar-title">Google Ads Protection Engine</h1>
         <div className="topbar-actions">
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => dryRunMutation.mutate()}
-            disabled={isBusy}
-          >
-            {dryRunMutation.isPending ? "Evaluating..." : "Run Dry-Run"}
-          </button>
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={() => reconcileMutation.mutate()}
-            disabled={isBusy}
-          >
-            {reconcileMutation.isPending ? "Syncing..." : "Reconcile Queue"}
-          </button>
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => refetch()}
-            disabled={isBusy}
-          >
+          <button className="btn btn-secondary btn-sm" onClick={refreshAll} disabled={isFetching}>
             <RefreshIcon size={13} />
             Refresh
           </button>
@@ -82,50 +46,57 @@ export default function ProtectionPage() {
       <main className="page-body">
         <div className="page-header">
           <h1>IP Exclusion Management</h1>
-          <p>Automated IP blacklist synchronized directly with connected Google Ads campaign criteria.</p>
+          <p>
+            High-confidence fraud is excluded from your Google Ads campaigns automatically. Failed calls are retried
+            with backoff; campaigns at their IP exclusion limit keep the strongest exclusions.
+          </p>
         </div>
 
-        {notification && (
-          <div className={`alert alert-${notification.type}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span>{notification.message}</span>
-            <button
-              onClick={() => setNotification(null)}
-              style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 700, padding: "0 6px" }}
-            >
-              &times;
-            </button>
+        {queue && !queue.auto_protection_enabled && (
+          <div className="alert alert-info">
+            Automatic protection is turned off: fraud is detected and reported, but no IP exclusions are created.
+          </div>
+        )}
+        {queue?.dry_run && (
+          <div className="alert alert-info">
+            Dry-run mode: the worker processes actions without calling Google Ads; exclusions are marked SKIPPED.
+          </div>
+        )}
+        {queue && queue.failed > 0 && (
+          <div className="alert alert-error">
+            {queue.failed} protection action{queue.failed === 1 ? "" : "s"} failed. See the error on each exclusion
+            below and the Audit Log for details.
           </div>
         )}
 
-        {/* Protection Summary Cards */}
         <section className="stats-grid" style={{ marginBottom: 20 }}>
           <div className="stat-card">
-            <div className="stat-label">Total Exclusions</div>
-            <div className="stat-value">{exclusions ? exclusions.length : "—"}</div>
-            <div className="stat-sub">Managed blacklist entries</div>
-          </div>
-          <div className="stat-card">
             <div className="stat-label">Active on Google Ads</div>
-            <div className="stat-value">
-              {exclusions ? exclusions.filter((e) => e.status === "ACTIVE").length : "—"}
-            </div>
-            <div className="stat-sub">Confirmed live blocking</div>
+            <div className="stat-value">{queue ? queue.active_exclusions : "—"}</div>
+            <div className="stat-sub">Confirmed live exclusions</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Pending Sync</div>
-            <div className="stat-value">
-              {exclusions ? exclusions.filter((e) => e.status === "PENDING" || e.status === "SUBMITTED").length : "—"}
-            </div>
-            <div className="stat-sub">Awaiting next reconcile pass</div>
+            <div className="stat-label">In Queue</div>
+            <div className="stat-value">{queue ? queue.pending + queue.processing : "—"}</div>
+            <div className="stat-sub">Waiting for the worker</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Retrying</div>
+            <div className="stat-value">{queue ? queue.retrying : "—"}</div>
+            <div className="stat-sub">Google errors, retried with backoff</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Waiting for Capacity</div>
+            <div className="stat-value">{queue ? queue.overflow_exclusions : "—"}</div>
+            <div className="stat-sub">Campaign IP exclusion limit reached</div>
           </div>
         </section>
 
-        {/* Exclusions Table */}
-        <div className="card">
+        <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
             <div>
               <h2 className="card-title">Current IP Exclusions</h2>
-              <div className="card-subtitle">Detailed record of blocked addresses and API delivery logs</div>
+              <div className="card-subtitle">Blocked addresses and their Google Ads delivery state</div>
             </div>
           </div>
 
@@ -138,7 +109,7 @@ export default function ProtectionPage() {
                   <th>Risk Score</th>
                   <th>Confidence</th>
                   <th>Reason</th>
-                  <th>Customer ID</th>
+                  <th>Campaign</th>
                   <th>Resource Name</th>
                 </tr>
               </thead>
@@ -153,7 +124,8 @@ export default function ProtectionPage() {
                 ) : !exclusions || exclusions.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="empty-state">
-                      No IP exclusions queued or active yet. Click <strong>Run Dry-Run</strong> to discover candidate IPs.
+                      No IP exclusions yet. They appear here automatically when high-confidence fraud is detected on a
+                      protected campaign.
                     </td>
                   </tr>
                 ) : (
@@ -162,11 +134,11 @@ export default function ProtectionPage() {
                       <td className="text-mono" style={{ fontWeight: 600 }}>{item.ip_address}</td>
                       <td>
                         <span className={exclusionBadge(item.status)} title={item.last_error ?? undefined}>
-                          {item.status}
+                          {item.overflow ? "QUEUED" : item.status}
                         </span>
                         {item.last_error && item.status !== "ACTIVE" && (
                           <div
-                            style={{ fontSize: 11.5, color: "var(--text-muted)", maxWidth: 220, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            style={{ fontSize: 11.5, color: "var(--text-muted)", maxWidth: 240, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                             title={item.last_error}
                           >
                             {item.status === "FAILED" ? "Protection action failed: " : ""}
@@ -179,10 +151,7 @@ export default function ProtectionPage() {
                           <div className="risk-bar-bg" style={{ width: 60 }}>
                             <div
                               className="risk-bar-fill"
-                              style={{
-                                width: `${Math.min(item.risk_score, 100)}%`,
-                                background: riskColor(item.risk_score),
-                              }}
+                              style={{ width: `${Math.min(item.risk_score, 100)}%`, background: riskColor(item.risk_score) }}
                             />
                           </div>
                           <span style={{ fontSize: 12.5, fontWeight: 600 }}>{item.risk_score}</span>
@@ -193,10 +162,66 @@ export default function ProtectionPage() {
                         {item.reason ?? "High risk score threshold"}
                       </td>
                       <td className="text-mono" style={{ fontSize: 12 }}>
-                        {item.google_customer_id}
+                        {item.campaign_id}
                       </td>
                       <td className="text-mono" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
-                        {item.google_resource_name ? item.google_resource_name.slice(-20) : "Pending API sync"}
+                        {item.google_resource_name ? item.google_resource_name.slice(-20) : "—"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">Recent Google Ads Actions</h2>
+              <div className="card-subtitle">What the protection worker sent to Google, with retries</div>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>IP Address</th>
+                  <th>Status</th>
+                  <th>Attempts</th>
+                  <th>Next Retry / Done</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {!actions || actions.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="empty-state">No protection actions yet.</td>
+                  </tr>
+                ) : (
+                  actions.map((action) => (
+                    <tr key={action.id}>
+                      <td style={{ fontSize: 12.5 }}>{action.action_type === "REMOVE_IP_EXCLUSION" ? "Remove exclusion" : "Add exclusion"}</td>
+                      <td className="text-mono">{action.ip_address ?? "—"}</td>
+                      <td>
+                        <span className={actionBadge(action.status)}>{action.status}</span>
+                      </td>
+                      <td style={{ fontSize: 13 }}>
+                        {action.attempts}/{action.max_attempts}
+                      </td>
+                      <td style={{ fontSize: 12.5 }}>
+                        {action.status === "RETRYING" && action.scheduled_at
+                          ? new Date(action.scheduled_at).toLocaleTimeString()
+                          : action.completed_at
+                            ? new Date(action.completed_at).toLocaleTimeString()
+                            : "—"}
+                      </td>
+                      <td
+                        style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        title={action.last_error ?? ""}
+                      >
+                        {action.last_error ?? "—"}
                       </td>
                     </tr>
                   ))
@@ -208,6 +233,20 @@ export default function ProtectionPage() {
       </main>
     </>
   );
+}
+
+function actionBadge(status: ProtectionAction["status"]): string {
+  switch (status) {
+    case "SUCCESS":
+      return "badge badge-active";
+    case "FAILED":
+      return "badge badge-failed";
+    case "RETRYING":
+    case "PROCESSING":
+      return "badge badge-submitted";
+    default:
+      return "badge badge-pending";
+  }
 }
 
 function RefreshIcon({ size }: { size: number }) {

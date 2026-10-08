@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Integer,
     Boolean,
     DateTime,
     Enum,
@@ -112,9 +113,15 @@ class GoogleCampaign(Base, TimestampMixin):
         Boolean, default=True, nullable=False
     )
 
-    # Cached count for exclusion capacity tracking (spec §39)
+    # Click Shield exclusions holding a slot (PENDING/SUBMITTED/ACTIVE); kept in
+    # sync by app/services/exclusion_capacity.py (spec §39).
     exclusion_count: Mapped[int] = mapped_column(
         BigInteger, default=0, nullable=False
+    )
+    # IP exclusions the advertiser added in Google Ads themselves; read during
+    # campaign sync. They use the same per-campaign limit.
+    external_exclusion_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
     )
 
     connection = relationship(

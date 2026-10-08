@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -43,6 +44,8 @@ class Exclusion(Base, TimestampMixin):
             name="uq_exclusion_org_campaign_ip",
         ),
         Index("ix_exclusions_org_status", "organization_id", "status"),
+        # Per-campaign capacity, eviction and overflow lookups (task 012)
+        Index("ix_exclusions_campaign_status", "google_campaign_id", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -82,6 +85,14 @@ class Exclusion(Base, TimestampMixin):
     # Latest protection-action error shown on the dashboard ("Protection Action
     # Failed", spec §43). `reason` stays the fraud explanation (spec §33).
     last_error: Mapped[str | None] = mapped_column(Text)
+
+    # Capacity management (spec §39, task 012). An overflow exclusion is SKIPPED
+    # because the campaign is full; it is promoted when a slot frees up.
+    overflow: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    # Most recent fraud evidence for this IP on this campaign: priority and expiry.
+    last_fraud_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     submitted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)

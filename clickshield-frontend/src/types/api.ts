@@ -126,15 +126,70 @@ export interface ProtectionExclusionResponse {
   google_resource_name: string | null;
   api_request_id: string | null;
   last_error: string | null;
+  overflow: boolean;
+  last_fraud_at: string | null;
 }
 
-export interface ProtectionQueueSummary {
-  queued: number;
-  processed: number;
-  successful: number;
-  failed: number;
-  skipped: number;
+/** GET /protection/queue — read-only view of the automatic protection pipeline. */
+export interface ProtectionQueueStatus {
+  auto_protection_enabled: boolean;
+  dry_run: boolean;
+  pending: number;
+  processing: number;
   retrying: number;
+  failed: number;
+  succeeded: number;
+  active_exclusions: number;
+  overflow_exclusions: number;
+}
+
+export type ActionStatus = "PENDING" | "PROCESSING" | "SUCCESS" | "FAILED" | "RETRYING";
+
+export interface ProtectionAction {
+  id: string;
+  action_type: "ADD_IP_EXCLUSION" | "REMOVE_IP_EXCLUSION" | "ADD_AUDIENCE_EXCLUSION";
+  status: ActionStatus;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  scheduled_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+  ip_address: string | null;
+  campaign_id: string | null;
+}
+
+// ─── Audit log ────────────────────────────────────────────────────────────────
+
+export type AuditResult = "SUCCESS" | "FAILED" | "PENDING";
+
+export interface AuditLogEntry {
+  id: string;
+  created_at: string;
+  action: string;
+  result: AuditResult;
+  user_id: string | null;
+  resource_type: string | null;
+  resource_id: string | null;
+  ip_address: string | null;
+  details: Record<string, unknown> | null;
+  error_message: string | null;
+  google_request_id: string | null;
+}
+
+export interface AuditLogPage {
+  items: AuditLogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditLogQuery {
+  action?: string;
+  result?: AuditResult;
+  ip?: string;
+  limit?: number;
+  offset?: number;
 }
 
 // ─── Google ───────────────────────────────────────────────────────────────────
@@ -172,6 +227,9 @@ export interface GoogleCampaignOut {
   status: string;
   protection_enabled: boolean;
   exclusion_count: number;
+  external_exclusion_count: number;
+  exclusion_used: number;
+  exclusion_limit: number;
   supports_ip_exclusion: boolean;
 }
 

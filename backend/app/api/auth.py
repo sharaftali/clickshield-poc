@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register_user(
     payload: RegisterRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> AuthResponse:
     try:
@@ -25,6 +26,7 @@ async def register_user(
             organization_name=payload.organization_name,
             organization_slug=payload.organization_slug,
             protection_mode=payload.protection_mode,
+            request=request,
         )
     except HTTPException:
         raise
@@ -33,12 +35,14 @@ async def register_user(
 @router.post("/login", response_model=AuthResponse)
 async def login_user(
     payload: LoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> AuthResponse:
     return await AuthService.login(
         db,
         email=payload.email,
         password=payload.password,
+        request=request,
     )
 
 

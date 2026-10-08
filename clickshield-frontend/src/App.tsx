@@ -8,6 +8,7 @@ import FraudEventsPage from "./pages/FraudEventsPage";
 import TopIPsPage from "./pages/TopIPsPage";
 import ProtectionPage from "./pages/ProtectionPage";
 import GooglePage from "./pages/GooglePage";
+import AuditLogPage from "./pages/AuditLogPage";
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/top-ips" element={<TopIPsPage />} />
         <Route path="/protection" element={<ProtectionPage />} />
         <Route path="/google" element={<GooglePage />} />
+        <Route path="/audit-log" element={<AuditLogPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -28,6 +28,16 @@ docker compose up --build
 
 On start the backend runs `alembic upgrade head`, then serves the API. The worker waits until the backend is healthy, which means the schema is migrated.
 
+**How protection runs.** When a session's verdict becomes FRAUD (high risk and confidence), the API queues an IP exclusion in the same database transaction. After the commit it pushes a `process_action` job to Redis. The worker (`arq app.workers.arq_worker.WorkerSettings`) calls Google Ads.
+
+A sweep every `WORKER_SWEEP_SECONDS` (default 15) also:
+- runs due retries;
+- re-queues actions from a crashed worker;
+- picks up any action whose job push was lost, for example while Redis was down;
+- promotes campaign overflow queues when the IP exclusion limit frees up.
+
+Set `AUTO_PROTECTION_ENABLED=false` for detect-and-report only.
+
 **Configuration.** Compose reads `backend/.env` if it exists (Google OAuth client ID/secret, keys, …). The database, Redis, CORS and proxy settings are set in `docker-compose.yml` and override `.env`, so a `.env` written for running on the host (with `localhost` URLs) still works. Without Google credentials, set `GOOGLE_ADS_DRY_RUN=true` in `backend/.env`; otherwise protection actions fail with "Google Ads is not configured".
 
 Useful commands:
@@ -40,6 +50,16 @@ docker compose up db redis                      # infra only; run uvicorn / vite
 docker compose down                             # stop (data kept)
 docker compose down -v                          # stop and DELETE the database volume
 ```
+
+**Tests.** From `backend/` with the dev requirements installed (`pip install -r requirements-dev.txt`):
+
+```bash
+docker compose up -d db          # from the repo root: a PostgreSQL for database tests
+pytest                           # everything: unit, tests/db, tests/poc (spec §75 scenarios)
+pytest tests/poc                 # only the 7 POC scenarios
+```
+
+Database tests use `TEST_DATABASE_URL` (default `postgresql+asyncpg://postgres:postgres@localhost:5432/clickshield_test`). They create and migrate that database themselves and truncate it before every test, so its name must end in `_test`. Your dev database is never touched. Without a reachable PostgreSQL, database tests are skipped. CI runs the same suite on every PR (`.github/workflows/backend-tests.yml`).
 
 **Existing local data.** The old `backend/docker-compose.yml` ran as project `backend`, so its data is in the volume `backend_clickshield_pgdata`. The new stack uses `clickshield_pgdata`. To keep the old data, copy it once before the first `up`:
 
@@ -90,7 +110,7 @@ Use `--platform linux/arm64` instead for Graviton tasks.
 | Service | Image / command | Port | Health check | Desired count |
 |---|---|---|---|---|
 | `api` | backend, `["api"]` | 8000 | ALB target group: `GET /health` | **1 for now** (see §2.5) |
-| `worker` | backend, `["worker"]` | — | container: `python -c "import os,sys,time; sys.exit(time.time()-os.path.getmtime('/tmp/clickshield-worker-heartbeat')>60)"` | 1 |
+| `worker` | backend, `["worker"]` (arq) | — | container: `arq --check app.workers.arq_worker.WorkerSettings` | 1 (more is safe: jobs and sweeps claim actions with row locks) |
 | `frontend` | frontend (default) | 80 | ALB target group: `GET /healthz` | 1–2 |
 
 ALB rules: `/api/*` and `/health` → `api` target group; default → `frontend` target group. With path routing at the ALB, the frontend's own `/api` proxy isn't used. Set `BACKEND_UPSTREAM` to the API's internal address only if you want nginx to proxy instead.
@@ -145,6 +165,5 @@ These come from the open tasks in the task list. Fix them before running in prod
 - **Run one API task with one uvicorn worker** until **task 033**. Google OAuth `state` is held in process memory, so with more than one API process the OAuth callback can land on a process that never saw the state.
 - **Task 032:** the app still has default secret values and seeds `admin@gmail.com` / a localhost website on every start. Set every secret in §2.3, and complete 032 before exposing the API.
 - **Task 031:** no rate limiting yet, and `TRACKING_CORS_ORIGINS=*` (the default) currently opens CORS for the whole API.
-- **Task 010:** the worker polls the action queue every `WORKER_POLL_SECONDS`. Exclusions are still *created* only when a user runs "Reconcile"/"Dry-run" in the dashboard. Automatic enqueue on a FRAUD verdict is task 010.
 
 Infrastructure as code (Terraform / CDK) for the layout above isn't included yet.

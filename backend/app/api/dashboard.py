@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.dependencies.auth import CurrentUser
-from app.models import ClientVerdict, Exclusion, FraudEvent, Session, Verdict
+from app.models import AuditResult, ClientVerdict, Exclusion, FraudEvent, Session, Verdict
+from app.services import audit_service
+from app.services.audit_service import AuditAction
 from app.schemas.dashboard import (
     DashboardFraudEvent,
     DashboardOverview,
@@ -94,6 +96,7 @@ async def recent_sessions(
 async def set_session_feedback(
     session_id: uuid.UUID,
     payload: SessionFeedbackIn,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> Session:
@@ -112,9 +115,28 @@ async def set_session_feedback(
             detail="Session not found for this organization.",
         )
 
+    previous_label = session.final_label
     session.client_verdict = payload.client_verdict
     session.final_label = (
         Verdict.FRAUD if payload.client_verdict == ClientVerdict.FRAUD else Verdict.SAFE
+    )
+    audit_service.record(
+        db,
+        action=AuditAction.SESSION_FEEDBACK,
+        result=AuditResult.SUCCESS,
+        organization_id=current_user.organization_id,
+        user_id=current_user.id,
+        resource_type="session",
+        resource_id=session.id,
+        request=request,
+        details={
+            "ip": session.ip_address,
+            "system_verdict": session.system_verdict,
+            "client_verdict": payload.client_verdict,
+            "previous_final_label": previous_label,
+            "risk": session.risk_score,
+            "confidence": session.confidence_score,
+        },
     )
     await db.commit()
     await db.refresh(session)

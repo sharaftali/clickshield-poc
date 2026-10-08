@@ -9,7 +9,8 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Session, Website
-from app.services.protection_service import enqueue_high_risk_exclusions
+from app.models import Verdict
+from app.services.protection_service import enqueue_exclusion_for_session
 from app.services.tracking_service import TrackingService
 from app.workers.action_worker import ActionWorker
 
@@ -111,13 +112,11 @@ async def test_enqueue_only_uses_campaigns_of_the_sessions_own_org():
     org_id = uuid.uuid4()
     fraud_session = SimpleNamespace(
         id=uuid.uuid4(), organization_id=org_id, google_campaign_id=uuid.uuid4(),
-        ip_address="203.0.113.7", risk_score=95, confidence_score=95,
+        ip_address="203.0.113.7", risk_score=95, confidence_score=95, verdict=Verdict.FRAUD,
     )
-    db = ScriptedDB(
-        SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [fraud_session])),
-        SimpleNamespace(first=lambda: None),  # campaign belongs to another tenant -> no row
-    )
-    created = await enqueue_high_risk_exclusions(db, organization_id=org_id)
-    assert created == [] and db.added == []
-    sql, params = pg(db.statements[1])
+    db = ScriptedDB(SimpleNamespace(first=lambda: None))  # campaign belongs to another tenant -> no row
+    result = await enqueue_exclusion_for_session(db, fraud_session)
+    assert result.outcome == "campaign_unavailable" and db.added == []
+    sql, params = pg(db.statements[0])
     assert "google_connections.organization_id = " in sql and org_id in params
+    assert "FOR UPDATE OF google_campaigns" in sql  # capacity decisions are serialized per campaign

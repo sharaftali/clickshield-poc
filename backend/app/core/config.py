@@ -138,17 +138,29 @@ class Settings(BaseSettings):
     REPUTATION_RULE_MIN_SCORE: int = 60       # decayed fraud ratio (0–100) to trigger the rule
     REPUTATION_RULE_MAX_WEIGHT: int = 30      # contribution at score 100 and full confidence
 
-    # ---- Google Ads Exclusion Limits (spec §39) ----
+    # ---- Google Ads Exclusion Limits (spec §39, §73: configurable, never hard-coded) ----
     GOOGLE_MAX_IP_EXCLUSIONS_PER_CAMPAIGN: int = 500
+    # Slots left free for IPs the advertiser excludes by hand in Google Ads.
+    GOOGLE_EXCLUSION_RESERVED_SLOTS: int = 25
+    # When a campaign is full, replace the lowest-priority exclusion with a stronger candidate.
+    EXCLUSION_EVICTION_ENABLED: bool = True
+    # Remove exclusions with no new fraud for this many days (0 = never expire).
+    EXCLUSION_EXPIRY_DAYS: int = 0
+    # A FAILED / SKIPPED exclusion is not re-attempted for the same IP sooner than this (spec §38).
+    EXCLUSION_RETRY_COOLDOWN_SECONDS: int = 3600
+
+    # ---- Automatic protection (spec §42) ----
+    # FRAUD verdicts create exclusions automatically. Off = detect and report only.
+    AUTO_PROTECTION_ENABLED: bool = True
 
     # ---- Action Queue (spec §42–43) ----
     ACTION_QUEUE_MAX_ATTEMPTS: int = 5
     ACTION_QUEUE_RETRY_BACKOFF_SECONDS: int = 30        # first retry delay; doubles each attempt
     ACTION_QUEUE_RETRY_MAX_BACKOFF_SECONDS: int = 3600  # cap on a single delay
     ACTION_QUEUE_STUCK_AFTER_SECONDS: int = 600         # PROCESSING longer than this = worker died
-    ACTION_QUEUE_WORKER_CONCURRENCY: int = 4
-    WORKER_POLL_SECONDS: float = 5.0   # how often the worker checks for due actions
-    WORKER_BATCH_SIZE: int = 20        # actions per pass (kept small for fast shutdown)
+    ACTION_QUEUE_WORKER_CONCURRENCY: int = 4            # arq max_jobs
+    WORKER_SWEEP_SECONDS: int = 15     # how often the worker sweeps for due actions / retries
+    WORKER_BATCH_SIZE: int = 20        # actions per sweep
 
     # ---- Bootstrap Admin (first-run seeding only) ----
     DEFAULT_ORGANIZATION_NAME: str = "Default Organization"

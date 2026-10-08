@@ -84,7 +84,8 @@ services:
       retries: 5
       start_period: 30s   # migrations run before the server listens
 
-  # Protection worker: sends queued exclusions to Google Ads and runs scheduled retries.
+  # Protection worker (arq): sends queued exclusions to Google Ads, runs retries,
+  # promotes overflow queues. Jobs come from the API via Redis; a sweep is the backstop.
   worker:
     <<: *backend-common
     command: ["worker"]
@@ -93,13 +94,15 @@ services:
     depends_on:
       backend:
         condition: service_healthy   # schema is migrated once the API is healthy
+      redis:
+        condition: service_healthy
     healthcheck:
-      # The worker touches this file every pass; stale for 60s = hung.
-      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/clickshield-worker-heartbeat') > 60)"]
-      interval: 15s
-      timeout: 5s
+      # arq writes a health key to Redis every 30s; --check fails if it's missing/stale.
+      test: ["CMD", "arq", "--check", "app.workers.arq_worker.WorkerSettings"]
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   # Dashboard (static build) + /api proxy to the backend.
   frontend:

@@ -1,143 +1,208 @@
+"""
+Turn a FRAUD verdict into a Google Ads exclusion request (spec §37–§42).
+
+`enqueue_exclusion_for_session` runs inside the tracking request's transaction:
+it only writes rows (Exclusion + PlatformAction); the Google API call happens
+later in the worker. It is idempotent per (organization, campaign, IP) — a
+repeat fraud session refreshes the evidence instead of creating a second
+exclusion (spec §41) — and respects the campaign's IP exclusion capacity
+(spec §39, see exclusion_capacity.py).
+"""
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models import (
+    ActionType,
+    AuditResult,
     CampaignType,
     Exclusion,
-    FraudEvent,
-    GoogleCampaign,
-    GoogleConnection,
-    PlatformAction,
-    Platform,
-    Session,
-    ActionType,
-    ActionStatus,
     ExclusionStatus,
+    FraudEvent,
+    PlatformAction,
+    Session,
     Verdict,
+)
+from app.services import audit_service
+from app.services.audit_service import AuditAction
+from app.services.exclusion_capacity import (
+    SLOT_STATUSES,
+    capacity_warning,
+    get_capacity,
+    lock_campaign,
+    new_action,
+    rebalance,
+    sync_exclusion_count,
 )
 
 logger = logging.getLogger(__name__)
 
-async def enqueue_high_risk_exclusions(
-    db: AsyncSession,
-    *,
-    organization_id: uuid.UUID | str | None = None,
-    min_risk_score: int = 80,
-    min_confidence: int = 80,
-) -> list[Exclusion]:
-    """Create exclusion records for any fraudulent sessions that are eligible for action."""
-    filters = [
-        Session.verdict == Verdict.FRAUD,
-        Session.risk_score >= min_risk_score,
-        Session.confidence_score >= min_confidence,
-        Session.ip_address.is_not(None),
-        Session.google_campaign_id.is_not(None),
-    ]
-    if organization_id is not None:
-        filters.append(Session.organization_id == organization_id)
+UNSUPPORTED_CAMPAIGN_TYPES = {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO}
+COOLDOWN_STATUSES = (ExclusionStatus.FAILED, ExclusionStatus.SKIPPED)
 
-    result = await db.execute(
-        select(Session)
-        .where(*filters)
-        .order_by(Session.created_at.desc())
+
+@dataclass
+class EnqueueResult:
+    outcome: str
+    exclusion: Exclusion | None = None
+    actions: list[PlatformAction] = field(default_factory=list)
+
+    @property
+    def action_ids(self) -> list[uuid.UUID]:
+        return [action.id for action in self.actions]
+
+
+def is_actionable_fraud(session: Session) -> bool:
+    return (
+        session.verdict == Verdict.FRAUD
+        and int(session.risk_score or 0) >= settings.FRAUD_RISK_FRAUD_THRESHOLD
+        and int(session.confidence_score or 0) >= settings.FRAUD_CONFIDENCE_MIN_FOR_BLOCK
+        and bool(session.ip_address)
     )
-    sessions = result.scalars().all()
 
-    created: list[Exclusion] = []
-    seen: set[tuple[uuid.UUID, str, str]] = set()
 
-    for session in sessions:
-        if not session.google_campaign_id or not session.ip_address:
-            continue
+def _valid_customer_id(value: str | None) -> str | None:
+    digits = (value or "").replace("-", "").strip()
+    return digits if digits.isdigit() and len(digits) == 10 else None
 
-        # The campaign must belong to a connection of the session's own tenant (spec §58).
-        row = (
-            await db.execute(
-                select(GoogleCampaign, GoogleConnection)
-                .join(GoogleConnection, GoogleConnection.id == GoogleCampaign.connection_id)
-                .where(
-                    GoogleCampaign.id == session.google_campaign_id,
-                    GoogleConnection.organization_id == session.organization_id,
-                )
-            )
-        ).first()
-        if row is None:
-            continue
-        campaign, connection = row
-        if not campaign.protection_enabled:
-            continue
-        if campaign.campaign_type in {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO}:
-            continue
 
-        customer_id = (connection.customer_id or "").replace("-", "").strip()
-        if not (customer_id.isdigit() and len(customer_id) == 10):
-            # No customer account selected yet: there is nothing valid to send to Google.
-            logger.warning(
-                "Not enqueuing exclusion for %s on campaign %s: connection %s has no valid customer ID",
-                session.ip_address, campaign.campaign_id, connection.id,
-            )
-            continue
-
-        ip_key = (session.organization_id, campaign.campaign_id, str(session.ip_address))
-        if ip_key in seen:
-            continue
-        seen.add(ip_key)
-
-        existing = await db.execute(
-            select(Exclusion).where(
-                Exclusion.organization_id == session.organization_id,
-                Exclusion.campaign_id == campaign.campaign_id,
-                Exclusion.ip_address == str(session.ip_address),
-            )
-        )
-        if existing.scalar_one_or_none() is not None:
-            continue
-
-        fraud_result = await db.execute(
-            select(FraudEvent.reason_text, FraudEvent.reason_code)
+async def _reasons(db: AsyncSession, session: Session) -> tuple[str, list[str]]:
+    rows = (
+        await db.execute(
+            select(FraudEvent.reason_code, FraudEvent.reason_text)
             .where(FraudEvent.session_id == session.id, FraudEvent.triggered.is_(True))
             .order_by(FraudEvent.score_contribution.desc(), FraudEvent.rule_name)
         )
-        reasons = fraud_result.all()
-        reason_text = "; ".join(
-            item.reason_text or item.reason_code for item in reasons if item.reason_text or item.reason_code
-        )
-        if not reason_text:
-            reason_text = "High-risk fraudulent session detected by fraud engine."
+    ).all()
+    text = "; ".join(row.reason_text or row.reason_code for row in rows)
+    return text or "High-risk fraudulent session detected by fraud engine.", [row.reason_code for row in rows]
 
+
+async def enqueue_exclusion_for_session(db: AsyncSession, session: Session) -> EnqueueResult:
+    """Create or refresh the exclusion for a FRAUD session. The caller commits."""
+    if not is_actionable_fraud(session):
+        return EnqueueResult("not_actionable")
+    if session.google_campaign_id is None:
+        return EnqueueResult("no_campaign")
+
+    # Campaign row lock: serializes capacity decisions and duplicate inserts per campaign.
+    locked = await lock_campaign(db, session.google_campaign_id, session.organization_id)
+    if locked is None:
+        return EnqueueResult("campaign_unavailable")
+    campaign, connection = locked
+    if not campaign.protection_enabled:
+        return EnqueueResult("protection_disabled")
+    if campaign.campaign_type in UNSUPPORTED_CAMPAIGN_TYPES:
+        return EnqueueResult("unsupported_campaign")
+    customer_id = _valid_customer_id(connection.customer_id)
+    if customer_id is None:
+        logger.warning(
+            "Not enqueuing exclusion for %s on campaign %s: connection %s has no valid customer ID",
+            session.ip_address, campaign.campaign_id, connection.id,
+        )
+        return EnqueueResult("no_customer")
+
+    now = datetime.now(timezone.utc)
+    ip = str(session.ip_address)
+    reason_text, reason_codes = await _reasons(db, session)
+
+    exclusion = (
+        await db.execute(
+            select(Exclusion)
+            .where(
+                Exclusion.organization_id == session.organization_id,
+                Exclusion.campaign_id == campaign.campaign_id,
+                Exclusion.ip_address == ip,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if exclusion is not None:
+        last_changed = exclusion.updated_at
+        # Same IP again: update local evidence, no duplicate Google action (spec §41).
+        exclusion.risk_score = max(int(exclusion.risk_score or 0), int(session.risk_score or 0))
+        exclusion.confidence = max(int(exclusion.confidence or 0), int(session.confidence_score or 0))
+        exclusion.last_fraud_at = now
+        exclusion.reason = reason_text
+        exclusion.google_campaign_id = campaign.id
+
+        if exclusion.status in SLOT_STATUSES:
+            return EnqueueResult("already_protected", exclusion)
+        if exclusion.status == ExclusionStatus.SKIPPED and exclusion.overflow:
+            actions = await rebalance(db, campaign)  # stronger evidence may now win a slot
+            return EnqueueResult("overflow", exclusion, actions)
+        cooldown = timedelta(seconds=settings.EXCLUSION_RETRY_COOLDOWN_SECONDS)
+        if exclusion.status in COOLDOWN_STATUSES and last_changed and last_changed > now - cooldown:
+            return EnqueueResult("cooldown", exclusion)
+        # REMOVED (or a FAILED/SKIPPED one past its cooldown): exclude again, same row.
+    else:
         exclusion = Exclusion(
+            id=uuid.uuid4(),
             organization_id=session.organization_id,
             google_customer_id=customer_id,
             campaign_id=campaign.campaign_id,
             google_campaign_id=campaign.id,
-            ip_address=str(session.ip_address),
+            ip_address=ip,
             reason=reason_text,
             risk_score=session.risk_score,
             confidence=session.confidence_score,
-            status=ExclusionStatus.PENDING,
+            status=ExclusionStatus.SKIPPED,  # placed below
+            last_fraud_at=now,
         )
         db.add(exclusion)
-        await db.flush()
 
-        action = PlatformAction(
-            organization_id=session.organization_id,
-            platform=Platform.GOOGLE,
-            action_type=ActionType.ADD_IP_EXCLUSION,
-            reference_id=exclusion.id,
-            status=ActionStatus.PENDING,
-            scheduled_at=datetime.now(timezone.utc),
-            attempts=0,
-            max_attempts=settings.ACTION_QUEUE_MAX_ATTEMPTS,
-        )
+    exclusion.google_customer_id = customer_id
+    details = {
+        "ip": ip,
+        "campaign_id": campaign.campaign_id,
+        "campaign_name": campaign.name,
+        "customer_id": customer_id,
+        "risk": session.risk_score,
+        "confidence": session.confidence_score,
+        "reason_codes": reason_codes,
+        "session_id": session.id,
+    }
+
+    await db.flush()
+    capacity = await get_capacity(db, campaign)
+    if capacity.available > 0:
+        exclusion.status = ExclusionStatus.PENDING
+        exclusion.overflow = False
+        exclusion.last_error = None
+        action = new_action(exclusion, ActionType.ADD_IP_EXCLUSION)
         db.add(action)
-        created.append(exclusion)
+        audit_service.record(
+            db, action=AuditAction.EXCLUSION_QUEUED, result=AuditResult.PENDING,
+            organization_id=session.organization_id, resource_type="exclusion",
+            resource_id=exclusion.id, details=details,
+        )
+        capacity_warning(db, campaign, session.organization_id, capacity, capacity.used + 1)
+        await sync_exclusion_count(db, campaign)
+        return EnqueueResult("queued", exclusion, [action])
 
-    await db.commit()
-    return created
+    # Campaign full: wait in the overflow queue; rebalance may evict a weaker exclusion.
+    exclusion.status = ExclusionStatus.SKIPPED
+    exclusion.overflow = True
+    exclusion.last_error = (
+        f"Campaign IP exclusion limit reached ({capacity.used}/{capacity.limit}); "
+        "queued until a slot frees up."
+    )
+    logger.warning(
+        "Campaign %s is full (%d/%d): %s queued in overflow",
+        campaign.campaign_id, capacity.used, capacity.limit, ip,
+    )
+    audit_service.record(
+        db, action=AuditAction.EXCLUSION_LIMIT_REACHED, result=AuditResult.PENDING,
+        organization_id=session.organization_id, resource_type="exclusion",
+        resource_id=exclusion.id, details={**details, "used": capacity.used, "limit": capacity.limit},
+    )
+    actions = await rebalance(db, campaign)
+    return EnqueueResult("overflow", exclusion, actions)

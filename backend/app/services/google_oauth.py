@@ -288,3 +288,53 @@ async def list_google_campaigns(
                 }
             )
     return campaigns
+
+
+async def count_ip_exclusions_by_campaign(
+    *,
+    access_token: str,
+    customer_id: str,
+    login_customer_id: str | None = None,
+) -> dict[str, int]:
+    """Negative IP_BLOCK criteria per campaign id, as Google holds them (spec §39).
+
+    Includes the advertiser's own exclusions and Click Shield's ACTIVE ones.
+    Raises ValueError if Google can't be queried.
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    if settings.GOOGLE_DEVELOPER_TOKEN:
+        headers["developer-token"] = settings.GOOGLE_DEVELOPER_TOKEN
+    if login_customer_id:
+        headers["login-customer-id"] = login_customer_id
+    payload = {
+        "query": (
+            "SELECT campaign.id, campaign_criterion.criterion_id "
+            "FROM campaign_criterion "
+            "WHERE campaign_criterion.type = 'IP_BLOCK' "
+            "AND campaign_criterion.negative = TRUE"
+        )
+    }
+    url = (
+        f"https://googleads.googleapis.com/{_google_ads_api_version()}/customers/"
+        f"{customer_id}/googleAds:searchStream"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        raise ValueError("Failed to count Google Ads IP exclusions.") from exc
+    if resp.status_code != 200:
+        logger.warning("Google Ads IP exclusion count failed: %s %s", resp.status_code, resp.text)
+        raise ValueError(f"Failed to count Google Ads IP exclusions: {resp.text}")
+
+    counts: dict[str, int] = {}
+    body = resp.json()
+    for batch in body if isinstance(body, list) else []:
+        for row in batch.get("results", []):
+            campaign_id = str((row.get("campaign") or {}).get("id", "")).strip()
+            if campaign_id:
+                counts[campaign_id] = counts.get(campaign_id, 0) + 1
+    return counts

@@ -369,26 +369,27 @@ export default function GooglePage() {
                   <th>Type</th>
                   <th>Status</th>
                   <th>IP Exclusion Support</th>
+                  <th>IP Exclusions Used</th>
                   <th>Protection</th>
                 </tr>
               </thead>
               <tbody>
                 {campaignsLoading ? (
                   <tr>
-                    <td colSpan={6} className="empty-state">
+                    <td colSpan={7} className="empty-state">
                       <div className="spinner" />
                       <span>Loading campaigns...</span>
                     </td>
                   </tr>
                 ) : !hasSelectedCustomer ? (
                   <tr>
-                    <td colSpan={6} className="empty-state">
+                    <td colSpan={7} className="empty-state">
                       Select a Google Ads customer account first, then sync campaigns.
                     </td>
                   </tr>
                 ) : !campaigns || campaigns.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="empty-state">
+                    <td colSpan={7} className="empty-state">
                       No campaigns synced yet. Click <strong>Sync Campaigns</strong> to load Google Ads campaigns.
                     </td>
                   </tr>
@@ -408,6 +409,18 @@ export default function GooglePage() {
                           <span className="badge badge-safe">Supported</span>
                         ) : (
                           <span className="badge badge-monitor">Not supported</span>
+                        )}
+                      </td>
+                      <td
+                        style={{ fontSize: 13, whiteSpace: "nowrap" }}
+                        title={`${campaign.exclusion_count} by Click Shield, ${campaign.external_exclusion_count} added in Google Ads`}
+                      >
+                        {campaign.supports_ip_exclusion ? (
+                          <span style={{ color: campaign.exclusion_used >= campaign.exclusion_limit * 0.9 ? "var(--danger, #b91c1c)" : undefined }}>
+                            {campaign.exclusion_used} / {campaign.exclusion_limit}
+                          </span>
+                        ) : (
+                          "—"
                         )}
                       </td>
                       <td>

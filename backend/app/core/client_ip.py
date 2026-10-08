@@ -61,6 +61,11 @@ def _parse_ip(value: str) -> IPAddress:
     return ip
 
 
+def parse_ip(value: str) -> IPAddress:
+    """Public form of the parser: normalized IP, or ClientIPError."""
+    return _parse_ip(value)
+
+
 def _is_trusted(ip: IPAddress, trusted: Iterable[IPNetwork]) -> bool:
     return any(ip.version == net.version and ip in net for net in trusted)
 

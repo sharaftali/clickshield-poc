@@ -12,6 +12,12 @@ from app.models import Base
 MIGRATION_LOCK_KEY = 724_001_337
 
 
+def include_object(obj, name, type_, reflected, compare_to):
+    # Backup tables created by data migrations (e.g. fraud_events_backup_005) are not
+    # models; never let autogenerate propose dropping them.
+    return not (type_ == "table" and reflected and "_backup_" in (name or ""))
+
+
 config = context.config
 
 # Use the SYNC database URL for Alembic (psycopg driver).
@@ -34,6 +40,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         compare_server_default=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -61,6 +68,7 @@ def run_migrations_online() -> None:
                 target_metadata=target_metadata,
                 compare_type=True,
                 compare_server_default=True,
+                include_object=include_object,
             )
 
             with context.begin_transaction():

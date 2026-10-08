@@ -62,7 +62,10 @@ class CampaignOut(BaseModel):
     campaign_type: str
     status: str
     protection_enabled: bool
-    exclusion_count: int
+    exclusion_count: int                 # Click Shield exclusions holding a slot
+    external_exclusion_count: int = 0    # advertiser's own IP exclusions in Google
+    exclusion_used: int = 0              # both together
+    exclusion_limit: int = 0             # usable slots (Google limit − reserved)
     supports_ip_exclusion: bool = True
 
     model_config = ConfigDict(from_attributes=True)

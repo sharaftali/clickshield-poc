@@ -19,9 +19,12 @@ from app.models import (
     Visitor,
     Website,
 )
+from app.core.config import settings
+from app.core.queue import enqueue_actions
 from app.schemas.tracking import TrackingBatchIn, TrackingResponse
 from app.services.fraud_engine import FraudEngine
 from app.services.ip_intel import IPIntelService
+from app.services.protection_service import enqueue_exclusion_for_session
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +186,20 @@ class TrackingService:
             previous_verdict=previous_verdict,
         )
 
+        # Automatic protection (spec §42): the session just became FRAUD → queue the
+        # exclusion in this transaction; the worker calls Google after commit.
+        protection_action_ids = []
+        if (
+            settings.AUTO_PROTECTION_ENABLED
+            and session.verdict == Verdict.FRAUD
+            and previous_verdict != Verdict.FRAUD
+        ):
+            protection = await enqueue_exclusion_for_session(self.db, session)
+            protection_action_ids = protection.action_ids
+            logger.info("Protection for session %s: %s", session.session_token, protection.outcome)
+
         await self.db.commit()
+        await enqueue_actions(protection_action_ids)
 
         logger.info(
             "Session %s scored: risk=%d confidence=%d verdict=%s",

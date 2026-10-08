@@ -3,15 +3,17 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import create_token, hash_password, verify_password
-from app.models.enums import ProtectionMode, UserRole
+from app.models.enums import AuditResult, ProtectionMode, UserRole
 from app.models.organization import Organization, User
 from app.schemas.auth import AuthResponse, AuthenticatedUserResponse, OrganizationSummary, TokenPair, UserPublic
+from app.services import audit_service
+from app.services.audit_service import AuditAction
 
 
 class AuthService:
@@ -35,7 +37,7 @@ class AuthService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def register(db: AsyncSession, *, full_name: str, email: str, password: str, organization_name: str, organization_slug: str | None, protection_mode: ProtectionMode) -> AuthResponse:
+    async def register(db: AsyncSession, *, full_name: str, email: str, password: str, organization_name: str, organization_slug: str | None, protection_mode: ProtectionMode, request: Request | None = None) -> AuthResponse:
         normalized_email = email.strip().lower()
         normalized_name = full_name.strip()
         if not normalized_name:
@@ -66,6 +68,19 @@ class AuthService:
 
         db.add_all([organization, user])
         await db.flush()
+        audit_service.record(
+            db,
+            action=AuditAction.USER_REGISTER,
+            result=AuditResult.SUCCESS,
+            organization_id=organization.id,
+            user_id=user.id,
+            resource_type="user",
+            resource_id=user.id,
+            request=request,
+            details={"email": user.email, "organization_slug": organization.slug},
+        )
+        # Nothing else commits this request: without it the account was never persisted.
+        await db.commit()
 
         access_token = create_token(str(user.id), "access")
         refresh_token = create_token(str(user.id), "refresh", expires_delta=timedelta(days=7))
@@ -94,15 +109,44 @@ class AuthService:
         )
 
     @staticmethod
-    async def login(db: AsyncSession, *, email: str, password: str) -> AuthResponse:
+    async def login(db: AsyncSession, *, email: str, password: str, request: Request | None = None) -> AuthResponse:
         normalized_email = email.strip().lower()
         user = await AuthService._get_user_by_email(db, normalized_email)
+
+        async def reject(reason: str, detail: str = "Invalid email or password.") -> HTTPException:
+            # Commit the audit row before the request fails (spec §44, §62).
+            audit_service.record(
+                db,
+                action=AuditAction.USER_LOGIN_FAILED,
+                result=AuditResult.FAILED,
+                organization_id=user.organization_id if user is not None else None,
+                user_id=user.id if user is not None else None,
+                resource_type="user",
+                request=request,
+                details={"email": normalized_email, "reason": reason},
+            )
+            await db.commit()
+            return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
         if user is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
+            raise await reject("unknown_email")
         if not verify_password(password, user.hashed_password):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
+            raise await reject("wrong_password")
         if not user.is_active:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is inactive.")
+            raise await reject("inactive", "Account is inactive.")
+
+        audit_service.record(
+            db,
+            action=AuditAction.USER_LOGIN_SUCCESS,
+            result=AuditResult.SUCCESS,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            resource_type="user",
+            resource_id=user.id,
+            request=request,
+            details={"email": normalized_email},
+        )
+        await db.commit()
 
         await db.refresh(user)
         organization = user.organization

@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: "/top-ips", label: "Top IPs", icon: IpIcon },
   { to: "/protection", label: "Protection", icon: ShieldIcon },
   { to: "/google", label: "Google Ads", icon: GoogleIcon },
+  { to: "/audit-log", label: "Audit Log", icon: AuditIcon },
 ];
 
 export default function Sidebar() {
@@ -106,6 +107,10 @@ function ShieldIcon({ size }: { size: number }) {
 function GoogleIcon({ size }: { size: number }) {
   return <Icon size={size}><path d="M14 8.1c0-.5-.1-.9-.2-1.3H8v2.5h3.4a2.9 2.9 0 01-1.3 1.9v1.6h2.1C13.4 11.6 14 10 14 8.1z"/><path d="M8 14c1.7 0 3.1-.6 4.2-1.5l-2.1-1.6c-.6.4-1.3.6-2.1.6-1.6 0-3-1.1-3.5-2.5H2.4v1.6C3.5 12.7 5.6 14 8 14z"/><path d="M4.5 9c-.1-.4-.2-.8-.2-1.2S4.4 7 4.5 6.6V5H2.4A6 6 0 002 7.8c0 1 .2 2 .5 2.8L4.5 9z"/><path d="M8 3.8c.9 0 1.7.3 2.3.9l1.8-1.8C11.1 2 9.7 1.4 8 1.4 5.6 1.4 3.5 2.7 2.4 4.6L4.5 6.2C5 4.8 6.4 3.8 8 3.8z"/></Icon>;
 }
+function AuditIcon({ size }: { size: number }) {
+  return <Icon size={size}><path d="M4 1.5h6l3 3V14a.5.5 0 01-.5.5h-8.5A.5.5 0 013.5 14V2a.5.5 0 01.5-.5z"/><polyline points="10 1.5 10 4.5 13 4.5"/><line x1="5.5" y1="8" x2="10.5" y2="8"/><line x1="5.5" y1="10.5" x2="10.5" y2="10.5"/></Icon>;
+}
+
 function ShieldSolidIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="white" stroke="none">
