@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
-from sqlalchemy import select
+from sqlalchemy import String, cast, distinct, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -168,6 +168,12 @@ class TrackingService:
             self.db.add(event)
 
         self._update_session_counters(session, payload)
+        await self._update_session_duration(session)
+
+        # Velocity is fixed at landing time; later batches of the session don't recount it.
+        if session_is_new and self._is_paid_landing(first, payload):
+            session.ad_landing_at = datetime.now(timezone.utc)
+            await self._apply_ad_click_velocity(session)
 
         previous_verdict = session.verdict
         await self.fraud_engine.score(
@@ -238,13 +244,12 @@ class TrackingService:
             last_seen_at=now,
             total_sessions=0,
         )
-        self.db.add(visitor)
-
         try:
-            await self.db.flush()
+            async with self.db.begin_nested():
+                self.db.add(visitor)
+                await self.db.flush()
             return visitor, True
         except IntegrityError:
-            await self.db.rollback()
             result = await self.db.execute(
                 select(Visitor)
                 .where(
@@ -269,13 +274,7 @@ class TrackingService:
         client_ip: str,
         request: Request,
     ) -> tuple[Session, bool]:
-        result = await self.db.execute(
-            select(Session)
-            .where(Session.session_token == first_event.session_token)
-            .order_by(Session.created_at.asc())
-            .limit(1)
-        )
-        session = result.scalar_one_or_none()
+        session = await self._find_session(website, first_event.session_token)
         if session:
             if session.google_campaign_id is None:
                 matched_campaign = await self._resolve_google_campaign(
@@ -329,23 +328,28 @@ class TrackingService:
             system_verdict=Verdict.SAFE,
             verdict=Verdict.SAFE,
         )
-        self.db.add(session)
-
         try:
-            await self.db.flush()
+            # Savepoint: losing a race on uq_sessions_website_token must not roll
+            # back the visitor created earlier in this transaction.
+            async with self.db.begin_nested():
+                self.db.add(session)
+                await self.db.flush()
             return session, True
         except IntegrityError:
-            await self.db.rollback()
-            result = await self.db.execute(
-                select(Session)
-                .where(Session.session_token == first_event.session_token)
-                .order_by(Session.created_at.asc())
-                .limit(1)
-            )
-            existing = result.scalar_one_or_none()
+            existing = await self._find_session(website, first_event.session_token)
             if not existing:
                 raise
             return existing, False
+
+    async def _find_session(self, website: Website, session_token: str) -> Session | None:
+        # Session tokens come from the browser: always scope them to the website (spec §58).
+        result = await self.db.execute(
+            select(Session).where(
+                Session.website_id == website.id,
+                Session.session_token == session_token,
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def _resolve_google_campaign(
         self,
@@ -386,23 +390,59 @@ class TrackingService:
 
         return None
 
+    def _is_paid_landing(self, first_event, payload: TrackingBatchIn) -> bool:
+        return self._is_google_ads_traffic(first_event) or any(
+            ev.event_type == EventType.AD_LANDING.value for ev in payload.events
+        )
+
+    async def _apply_ad_click_velocity(self, session: Session) -> None:
+        """Count paid ad landings by the same IP and the same visitor across sessions (spec §16)."""
+        await self.db.flush()  # autoflush is off; the current landing must be counted
+        counts_by_key: dict[str, dict[str, int]] = {}
+        if session.ip_address:
+            counts_by_key["ip"] = await self._ad_click_counts(session, Session.ip_address, session.ip_address)
+        if session.visitor_id:
+            counts_by_key["visitor"] = await self._ad_click_counts(session, Session.visitor_id, session.visitor_id)
+
+        for name, value in merge_velocity_counts(counts_by_key).items():
+            setattr(session, name, value)
+        session.extra_signals = {**(session.extra_signals or {}), "ad_click_velocity": counts_by_key}
+
+    async def _ad_click_counts(self, session: Session, key_column, key_value) -> dict[str, int]:
+        query = build_ad_click_velocity_query(
+            organization_id=session.organization_id,
+            key_column=key_column,
+            key_value=key_value,
+            landed_at=session.ad_landing_at,
+        )
+        row = (await self.db.execute(query)).one()
+        return {name: int(row._mapping[name] or 0) for name, _ in VELOCITY_WINDOWS}
+
+    async def _update_session_duration(self, session: Session) -> None:
+        """Duration spans all of the session's events, not just the current batch."""
+        await self.db.flush()
+        first_at, last_at = (
+            await self.db.execute(
+                select(func.min(Event.timestamp), func.max(Event.timestamp)).where(
+                    Event.session_id == session.id
+                )
+            )
+        ).one()
+        if first_at is not None and last_at is not None:
+            session.session_duration_seconds = max(0.0, (last_at - first_at).total_seconds())
+
     def _update_session_counters(
         self, session: Session, payload: TrackingBatchIn
     ) -> None:
-        event_timestamps: list[datetime] = []
-        click_timestamps: list[datetime] = []
-
         for ev in payload.events:
-            event_timestamp = ev.timestamp
-            if event_timestamp.tzinfo is None:
-                event_timestamp = event_timestamp.replace(tzinfo=timezone.utc)
-            event_timestamps.append(event_timestamp)
+            if ev.event_type in INTERACTION_EVENT_TYPES:
+                session.interaction_count = (session.interaction_count or 0) + 1
 
             if ev.event_type == EventType.PAGE_VIEW.value:
                 session.page_count = (session.page_count or 0) + 1
             elif ev.event_type == EventType.CLICK.value:
+                # On-page clicks only feed engagement, never ad-click velocity.
                 session.click_count = (session.click_count or 0) + 1
-                click_timestamps.append(event_timestamp)
             elif ev.event_type == EventType.SCROLL.value:
                 if ev.payload and "depth" in ev.payload:
                     session.scroll_depth = max(
@@ -410,41 +450,57 @@ class TrackingService:
                         float(ev.payload["depth"]),
                     )
 
-        if event_timestamps:
-            start = min(event_timestamps)
-            end = max(event_timestamps)
-            session.session_duration_seconds = max(
-                session.session_duration_seconds or 0.0,
-                (end - start).total_seconds(),
-            )
 
-        if click_timestamps:
-            newest_click = max(click_timestamps)
-            windows = {
-                10: 10,
-                30: 30,
-                60: 60,
-                300: 300,
-                3600: 3600,
-                86400: 86400,
-            }
-            for seconds in windows:
-                bucket = sum(
-                    1
-                    for ts in click_timestamps
-                    if (newest_click - ts).total_seconds() <= seconds
-                )
-                if seconds == 10:
-                    session.clicks_10_seconds = bucket
-                elif seconds == 30:
-                    session.clicks_30_seconds = bucket
-                elif seconds == 60:
-                    session.clicks_60_seconds = bucket
-                elif seconds == 300:
-                    session.clicks_5_minutes = bucket
-                elif seconds == 3600:
-                    session.clicks_1_hour = bucket
-                elif seconds == 86400:
-                    session.clicks_24_hours = bucket
+# (column name, window seconds) — spec §16
+VELOCITY_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("clicks_10_seconds", 10),
+    ("clicks_30_seconds", 30),
+    ("clicks_60_seconds", 60),
+    ("clicks_5_minutes", 300),
+    ("clicks_1_hour", 3600),
+    ("clicks_24_hours", 86400),
+)
 
-        session.interaction_count = (session.interaction_count or 0) + len(payload.events)
+INTERACTION_EVENT_TYPES = frozenset(
+    event_type.value
+    for event_type in (
+        EventType.CLICK,
+        EventType.SCROLL,
+        EventType.FORM_START,
+        EventType.FORM_SUBMIT,
+        EventType.PHONE_CLICK,
+        EventType.OUTBOUND_CLICK,
+        EventType.CONVERSION,
+    )
+)
+
+
+def build_ad_click_velocity_query(*, organization_id, key_column, key_value, landed_at: datetime):
+    """One row with a count per window of distinct paid ad clicks for one key.
+
+    Repeat landings with the same gclid are reloads of one ad click, so each
+    gclid counts once; landings without a gclid count per session.
+    """
+    click_key = func.coalesce(Session.gclid, cast(Session.id, String))
+    longest = max(seconds for _, seconds in VELOCITY_WINDOWS)
+    columns = [
+        func.count(distinct(click_key))
+        .filter(Session.ad_landing_at > landed_at - timedelta(seconds=seconds))
+        .label(name)
+        for name, seconds in VELOCITY_WINDOWS
+    ]
+    return select(*columns).where(
+        Session.organization_id == organization_id,
+        key_column == key_value,
+        Session.ad_landing_at.is_not(None),
+        Session.ad_landing_at > landed_at - timedelta(seconds=longest),
+        Session.ad_landing_at <= landed_at,
+    )
+
+
+def merge_velocity_counts(counts_by_key: dict[str, dict[str, int]]) -> dict[str, int]:
+    """Per window, the highest count across keys (IP, visitor). At least 1: the current landing."""
+    return {
+        name: max([1, *(counts.get(name, 0) for counts in counts_by_key.values())])
+        for name, _ in VELOCITY_WINDOWS
+    }

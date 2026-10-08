@@ -77,6 +77,9 @@ class Settings(BaseSettings):
         description="Legacy developer token. Accepted but ignored by Google Ads API.",
     )
     GOOGLE_ADS_API_VERSION: str = "v21"
+    # Local development only: process actions without calling Google. Exclusions
+    # are stored as SKIPPED (never ACTIVE) so the dashboard can't show fake protection.
+    GOOGLE_ADS_DRY_RUN: bool = False
 
     # ---- IP Intelligence (spec §13) ----
     IPINFO_API_KEY: str | None = Field(
@@ -119,12 +122,27 @@ class Settings(BaseSettings):
     FRAUD_RISK_MONITOR_THRESHOLD: int = 50
     FRAUD_CONFIDENCE_MIN_FOR_BLOCK: int = 80
 
+    # ---- Click velocity rules (spec §16, §22) — paid ad landings per IP/visitor ----
+    VELOCITY_CLICKS_60S_THRESHOLD: int = 8
+    BURST_CLICKS_30S_THRESHOLD: int = 4
+    BURST_MAX_SESSION_SECONDS: float = 10.0
+
+    # ---- IP reputation (spec §14) — per organization, decayed, never self-referencing ----
+    REPUTATION_WINDOW_DAYS: int = 30          # history considered
+    REPUTATION_HALF_LIFE_DAYS: float = 7.0    # a session 7 days old counts half
+    REPUTATION_MIN_SAMPLE: int = 3            # labelled past sessions before reputation counts
+    REPUTATION_FULL_CONFIDENCE_WEIGHT: float = 10.0  # decayed sessions for 100% confidence
+    REPUTATION_RULE_MIN_SCORE: int = 60       # decayed fraud ratio (0–100) to trigger the rule
+    REPUTATION_RULE_MAX_WEIGHT: int = 30      # contribution at score 100 and full confidence
+
     # ---- Google Ads Exclusion Limits (spec §39) ----
     GOOGLE_MAX_IP_EXCLUSIONS_PER_CAMPAIGN: int = 500
 
     # ---- Action Queue (spec §42–43) ----
     ACTION_QUEUE_MAX_ATTEMPTS: int = 5
-    ACTION_QUEUE_RETRY_BACKOFF_SECONDS: int = 30
+    ACTION_QUEUE_RETRY_BACKOFF_SECONDS: int = 30        # first retry delay; doubles each attempt
+    ACTION_QUEUE_RETRY_MAX_BACKOFF_SECONDS: int = 3600  # cap on a single delay
+    ACTION_QUEUE_STUCK_AFTER_SECONDS: int = 600         # PROCESSING longer than this = worker died
     ACTION_QUEUE_WORKER_CONCURRENCY: int = 4
 
     # ---- Bootstrap Admin (first-run seeding only) ----

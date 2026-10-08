@@ -95,6 +95,13 @@
     });
   }
 
+  function hasPaidAttribution() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('gclid') || params.get('gbraid') || params.get('wbraid')) return true;
+    if (params.get('campaign_id') || params.get('campaignid') || params.get('utm_id')) return true;
+    return (params.get('utm_source') || '').toLowerCase().indexOf('google') !== -1;
+  }
+
   function registerTracker() {
     const queue = [];
     const config = getConfig();
@@ -103,6 +110,9 @@
       console.warn('[ClickShield] siteToken is required. Set window.ClickShieldConfig = { siteToken: "..." };');
       return;
     }
+
+    // Must be read before the first event creates the session token.
+    const isNewSession = !window.sessionStorage.getItem(config.sessionStorageKey);
 
     const send = function (eventType, payload, customMeta) {
       queue.push(buildEvent(eventType, payload, customMeta));
@@ -134,6 +144,11 @@
 
     window.ClickShieldTracker = tracker;
 
+    // One ad_landing per paid session: this is the "ad click" that velocity
+    // rules count. On-page clicks below are engagement only.
+    if (isNewSession && hasPaidAttribution()) {
+      send('ad_landing', { landing_path: window.location.pathname });
+    }
     tracker.trackPageView();
 
     document.addEventListener('click', function (event) {

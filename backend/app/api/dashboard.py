@@ -129,8 +129,11 @@ async def recent_fraud_events(
 ) -> list[FraudEvent]:
     result = await db.execute(
         select(FraudEvent)
-        .where(FraudEvent.organization_id == current_user.organization_id)
-        .order_by(FraudEvent.created_at.desc())
+        .where(
+            FraudEvent.organization_id == current_user.organization_id,
+            FraudEvent.triggered.is_(True),
+        )
+        .order_by(FraudEvent.updated_at.desc())
         .limit(limit)
     )
     return list(result.scalars().all())

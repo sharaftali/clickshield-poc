@@ -24,6 +24,7 @@ class ProtectionExclusionResponse(BaseModel):
     status: ExclusionStatus
     google_resource_name: str | None = None
     api_request_id: str | None = None
+    last_error: str | None = None
 
     @field_validator("ip_address", mode="before")
     @classmethod
@@ -39,3 +40,4 @@ class ProtectionQueueSummary(BaseModel):
     successful: int
     failed: int
     skipped: int = 0
+    retrying: int = 0

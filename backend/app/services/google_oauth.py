@@ -83,8 +83,41 @@ async def exchange_code_for_tokens(code: str) -> dict:
     return payload
 
 
+class GoogleAuthError(ValueError):
+    """Token refresh failed.
+
+    permanent=True means retrying cannot help (revoked/expired grant, bad client
+    credentials): the connection needs the user to re-authorize (spec §66
+    "Authentication expired"). permanent=False is a network/5xx problem.
+    """
+
+    def __init__(self, message: str, *, permanent: bool, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.permanent = permanent
+        self.error_code = error_code
+
+
+# OAuth token-endpoint errors that retrying will never fix (RFC 6749 §5.2).
+_PERMANENT_TOKEN_ERRORS = {"invalid_grant", "invalid_client", "unauthorized_client", "unsupported_grant_type"}
+
+
+def classify_token_error(status_code: int, body: dict | None) -> GoogleAuthError:
+    error_code = str((body or {}).get("error") or "") or None
+    description = (body or {}).get("error_description") or ""
+    if error_code in _PERMANENT_TOKEN_ERRORS:
+        permanent = True
+    else:
+        permanent = not (status_code == 429 or status_code >= 500)
+    detail = f"{error_code}: {description}".strip(": ") if error_code else f"HTTP {status_code}"
+    return GoogleAuthError(
+        f"Failed to refresh Google OAuth token ({detail})",
+        permanent=permanent,
+        error_code=error_code,
+    )
+
+
 async def refresh_access_token(refresh_token: str) -> dict:
-    """Exchange a stored refresh token for a fresh access token."""
+    """Exchange a stored refresh token for a fresh access token. Raises GoogleAuthError."""
     data = {
         "client_id": settings.GOOGLE_CLIENT_ID,
         "client_secret": settings.GOOGLE_CLIENT_SECRET,
@@ -95,12 +128,22 @@ async def refresh_access_token(refresh_token: str) -> dict:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(GOOGLE_TOKEN_URL, data=data)
-            if resp.status_code != 200:
-                raise ValueError(f"Failed to refresh Google OAuth token: {resp.text}")
-            return resp.json()
     except httpx.HTTPError as exc:
         logger.warning("Google token refresh network failure: %s", exc)
-        raise ValueError("Failed to refresh Google OAuth token due to a network error.") from exc
+        raise GoogleAuthError(
+            "Failed to refresh Google OAuth token due to a network error.", permanent=False
+        ) from exc
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = None
+
+    if resp.status_code != 200:
+        raise classify_token_error(resp.status_code, payload if isinstance(payload, dict) else None)
+    if not isinstance(payload, dict) or not payload.get("access_token"):
+        raise GoogleAuthError("Google OAuth token response had no access_token.", permanent=False)
+    return payload
 
 
 async def fetch_user_email(access_token: str) -> str | None:

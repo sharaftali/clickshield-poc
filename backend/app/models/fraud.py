@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -20,11 +21,18 @@ from app.models.base import Base, TimestampMixin
 
 class IPReputation(Base, TimestampMixin):
     """
-    Internal IP reputation layer.
+    Internal IP reputation layer — one row per (organization, IP).
     Per spec §14: historical reputation influences risk but is never the sole reason.
+    Per spec §58: tenant-scoped. risk_score/confidence hold the latest decayed
+    score (app/services/ip_reputation.py), not an all-time maximum.
     """
     __tablename__ = "ip_reputation"
 
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     ip: Mapped[str] = mapped_column(INET, primary_key=True)
 
     risk_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -59,6 +67,8 @@ class FraudEvent(Base, TimestampMixin):
     __table_args__ = (
         # Index("ix_fraud_events_session", "session_id"), <-- REMOVED: duplicate of column-level index=True
         Index("ix_fraud_events_org_created", "organization_id", "created_at"),
+        # One row per rule per session; re-scoring updates it in place (task 005).
+        UniqueConstraint("session_id", "rule_name", name="uq_fraud_events_session_rule"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

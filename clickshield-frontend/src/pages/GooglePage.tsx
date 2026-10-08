@@ -249,7 +249,11 @@ export default function GooglePage() {
                       <td>{c.google_account_email ?? "—"}</td>
                       <td className="text-mono">{c.login_customer_id ?? "Direct Account"}</td>
                       <td>
-                        {c.is_active ? (
+                        {c.needs_reauth ? (
+                          <span className="badge badge-failed" title={c.auth_error ?? undefined}>
+                            Reconnect required
+                          </span>
+                        ) : c.is_active ? (
                           <span className="badge badge-active">Connected</span>
                         ) : (
                           <span className="badge badge-failed">Disconnected</span>

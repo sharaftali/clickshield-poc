@@ -17,6 +17,7 @@ export function exclusionBadge(status: ExclusionStatus): string {
     ACTIVE: "badge badge-active",
     FAILED: "badge badge-failed",
     REMOVED: "badge badge-removed",
+    SKIPPED: "badge badge-removed",
   };
   return map[status] ?? "badge";
 }

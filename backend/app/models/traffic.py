@@ -84,6 +84,13 @@ class Session(Base, TimestampMixin):
         Index("ix_sessions_org_created", "organization_id", "created_at"),
         # ix_sessions_ip removed — duplicate of ix_sessions_ip_address
         # which is auto-created via index=True on the column.
+        # Ad-click velocity lookups across sessions (spec §16)
+        Index("ix_sessions_org_ip_ad_landing", "organization_id", "ip_address", "ad_landing_at"),
+        Index("ix_sessions_visitor_ad_landing", "visitor_id", "ad_landing_at"),
+        # IP reputation history: this org's other sessions on an IP (spec §14)
+        Index("ix_sessions_org_ip_created", "organization_id", "ip_address", "created_at"),
+        # Browser-generated session tokens are only unique within a website (spec §58).
+        UniqueConstraint("website_id", "session_token", name="uq_sessions_website_token"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -107,10 +114,8 @@ class Session(Base, TimestampMixin):
         index=True,
     )
 
-    # Client-side generated session identifier
-    session_token: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    # Client-side generated session identifier (unique per website, see __table_args__)
+    session_token: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # ---- Attribution (spec §10) ----
     gclid: Mapped[str | None] = mapped_column(String(255), index=True)
@@ -154,7 +159,10 @@ class Session(Base, TimestampMixin):
         Float, default=0.0, nullable=False
     )
     page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # On-page DOM clicks (engagement signal). NOT ad clicks — those are counted
+    # by the velocity columns below.
     click_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Real interactions only (click, scroll, form, phone, outbound, conversion).
     interaction_count: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
@@ -163,6 +171,11 @@ class Session(Base, TimestampMixin):
     )
 
     # ---- Click velocity (spec §16) ----
+    # Server time at which this session landed from a paid ad click (gclid /
+    # Google Ads UTM / ad_landing event). NULL for non-paid sessions.
+    ad_landing_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Paid ad landings from the same IP or visitor (whichever is higher) within
+    # each window, counted across sessions at landing time; one per gclid.
     clicks_10_seconds: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )

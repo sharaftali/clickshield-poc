@@ -26,6 +26,7 @@ from app.schemas.google import (
     UpdateCampaignProtectionIn,
 )
 from app.services.google_oauth import (
+    GoogleAuthError,
     build_authorization_url,
     exchange_code_for_tokens,
     fetch_user_email,
@@ -210,6 +211,9 @@ async def google_callback(
         connection.refresh_token_encrypted = encrypt(refresh_token)
         connection.google_account_email = email
         connection.is_active = True
+        # A fresh grant clears any earlier revoked/expired-token state.
+        connection.needs_reauth = False
+        connection.auth_error = None
 
     await db.commit()
     await db.refresh(connection)
@@ -330,6 +334,10 @@ async def sync_campaigns(
         token_payload = await refresh_access_token(refresh_token)
         access_token = token_payload.get("access_token")
     except ValueError as exc:
+        if isinstance(exc, GoogleAuthError) and exc.permanent:
+            connection.needs_reauth = True
+            connection.auth_error = str(exc)[:1000]
+            await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),

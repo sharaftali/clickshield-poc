@@ -161,7 +161,18 @@ export default function ProtectionPage() {
                     <tr key={item.id}>
                       <td className="text-mono" style={{ fontWeight: 600 }}>{item.ip_address}</td>
                       <td>
-                        <span className={exclusionBadge(item.status)}>{item.status}</span>
+                        <span className={exclusionBadge(item.status)} title={item.last_error ?? undefined}>
+                          {item.status}
+                        </span>
+                        {item.last_error && item.status !== "ACTIVE" && (
+                          <div
+                            style={{ fontSize: 11.5, color: "var(--text-muted)", maxWidth: 220, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            title={item.last_error}
+                          >
+                            {item.status === "FAILED" ? "Protection action failed: " : ""}
+                            {item.last_error}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <div className="risk-bar-wrap">

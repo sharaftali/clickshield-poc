@@ -33,6 +33,8 @@ class GoogleConnectionOut(BaseModel):
     login_customer_id: str | None
     google_account_email: str | None
     is_active: bool
+    needs_reauth: bool = False
+    auth_error: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

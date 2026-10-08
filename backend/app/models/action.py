@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.config import settings
 from app.models.base import Base, TimestampMixin
 from app.models.enums import (
     ActionStatus,
@@ -78,6 +79,10 @@ class Exclusion(Base, TimestampMixin):
     google_resource_name: Mapped[str | None] = mapped_column(String(255))
     api_request_id: Mapped[str | None] = mapped_column(String(100))
 
+    # Latest protection-action error shown on the dashboard ("Protection Action
+    # Failed", spec §43). `reason` stays the fraud explanation (spec §33).
+    last_error: Mapped[str | None] = mapped_column(Text)
+
     submitted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
@@ -126,7 +131,7 @@ class PlatformAction(Base, TimestampMixin):
 
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_attempts: Mapped[int] = mapped_column(
-        Integer, default=5, nullable=False
+        Integer, default=lambda: settings.ACTION_QUEUE_MAX_ATTEMPTS, nullable=False
     )
 
     last_error: Mapped[str | None] = mapped_column(Text)

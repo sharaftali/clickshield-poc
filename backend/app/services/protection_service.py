@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models import (
     CampaignType,
     Exclusion,
@@ -21,6 +23,7 @@ from app.models import (
     Verdict,
 )
 
+logger = logging.getLogger(__name__)
 
 async def enqueue_high_risk_exclusions(
     db: AsyncSession,
@@ -54,25 +57,33 @@ async def enqueue_high_risk_exclusions(
         if not session.google_campaign_id or not session.ip_address:
             continue
 
-        campaign_result = await db.execute(
-            select(GoogleCampaign).where(GoogleCampaign.id == session.google_campaign_id)
-        )
-        campaign = campaign_result.scalar_one_or_none()
-        if campaign is None:
+        # The campaign must belong to a connection of the session's own tenant (spec §58).
+        row = (
+            await db.execute(
+                select(GoogleCampaign, GoogleConnection)
+                .join(GoogleConnection, GoogleConnection.id == GoogleCampaign.connection_id)
+                .where(
+                    GoogleCampaign.id == session.google_campaign_id,
+                    GoogleConnection.organization_id == session.organization_id,
+                )
+            )
+        ).first()
+        if row is None:
             continue
+        campaign, connection = row
         if not campaign.protection_enabled:
             continue
         if campaign.campaign_type in {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO}:
             continue
 
-        customer_id = ""
-        if campaign.connection_id:
-            connection_result = await db.execute(
-                select(GoogleConnection).where(GoogleConnection.id == campaign.connection_id)
+        customer_id = (connection.customer_id or "").replace("-", "").strip()
+        if not (customer_id.isdigit() and len(customer_id) == 10):
+            # No customer account selected yet: there is nothing valid to send to Google.
+            logger.warning(
+                "Not enqueuing exclusion for %s on campaign %s: connection %s has no valid customer ID",
+                session.ip_address, campaign.campaign_id, connection.id,
             )
-            connection = connection_result.scalar_one_or_none()
-            if connection is not None:
-                customer_id = connection.customer_id
+            continue
 
         ip_key = (session.organization_id, campaign.campaign_id, str(session.ip_address))
         if ip_key in seen:
@@ -91,8 +102,8 @@ async def enqueue_high_risk_exclusions(
 
         fraud_result = await db.execute(
             select(FraudEvent.reason_text, FraudEvent.reason_code)
-            .where(FraudEvent.session_id == session.id)
-            .order_by(FraudEvent.created_at.desc())
+            .where(FraudEvent.session_id == session.id, FraudEvent.triggered.is_(True))
+            .order_by(FraudEvent.score_contribution.desc(), FraudEvent.rule_name)
         )
         reasons = fraud_result.all()
         reason_text = "; ".join(
@@ -121,9 +132,9 @@ async def enqueue_high_risk_exclusions(
             action_type=ActionType.ADD_IP_EXCLUSION,
             reference_id=exclusion.id,
             status=ActionStatus.PENDING,
-            scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=5),
+            scheduled_at=datetime.now(timezone.utc),
             attempts=0,
-            max_attempts=5,
+            max_attempts=settings.ACTION_QUEUE_MAX_ATTEMPTS,
         )
         db.add(action)
         created.append(exclusion)

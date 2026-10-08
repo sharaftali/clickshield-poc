@@ -45,6 +45,7 @@ async def reconcile_protection(
         successful=metrics["successful"],
         failed=metrics["failed"],
         skipped=metrics["skipped"],
+        retrying=metrics["retrying"],
     )
 
 

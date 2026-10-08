@@ -110,7 +110,7 @@ export interface DashboardTopIP {
 
 // ─── Protection ──────────────────────────────────────────────────────────────
 
-export type ExclusionStatus = "PENDING" | "SUBMITTED" | "ACTIVE" | "FAILED" | "REMOVED";
+export type ExclusionStatus = "PENDING" | "SUBMITTED" | "ACTIVE" | "FAILED" | "REMOVED" | "SKIPPED";
 
 export interface ProtectionExclusionResponse {
   id: string;
@@ -125,6 +125,7 @@ export interface ProtectionExclusionResponse {
   status: ExclusionStatus;
   google_resource_name: string | null;
   api_request_id: string | null;
+  last_error: string | null;
 }
 
 export interface ProtectionQueueSummary {
@@ -133,6 +134,7 @@ export interface ProtectionQueueSummary {
   successful: number;
   failed: number;
   skipped: number;
+  retrying: number;
 }
 
 // ─── Google ───────────────────────────────────────────────────────────────────
@@ -143,6 +145,8 @@ export interface GoogleConnectionOut {
   login_customer_id: string | null;
   google_account_email: string | null;
   is_active: boolean;
+  needs_reauth: boolean;
+  auth_error: string | null;
 }
 
 export interface GoogleAccountOut {

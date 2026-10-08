@@ -58,6 +58,13 @@ class GoogleConnection(Base, TimestampMixin):
         DateTime(timezone=True)
     )
 
+    # Set when Google rejects the refresh token (revoked/expired grant).
+    # Protection actions fail until the user reconnects (spec §43, §66).
+    needs_reauth: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    auth_error: Mapped[str | None] = mapped_column(Text)
+
     organization = relationship(
         "Organization", back_populates="google_connections"
     )
