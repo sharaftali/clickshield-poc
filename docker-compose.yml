@@ -1,0 +1,129 @@
+# Click Shield — full local stack.
+#
+#   docker compose up --build          everything: http://localhost:8080 (dashboard)
+#   docker compose up db redis         infrastructure only (run the API/Vite on the host)
+#
+# The backend and frontend images built here are the same images deployed to
+# AWS (ECR → ECS); db and redis are local stand-ins for RDS and ElastiCache.
+# See deploy/README.md.
+
+name: clickshield
+
+x-backend-env: &backend-env
+  # Point the app at the compose services. These override any localhost URLs in backend/.env.
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/clickshield
+  DATABASE_URL_SYNC: postgresql+psycopg://postgres:postgres@db:5432/clickshield
+  REDIS_URL: redis://redis:6379/0
+  LOG_TO_FILE: "false"
+
+x-backend-common: &backend-common
+  build:
+    context: ./backend
+  image: clickshield-backend:local
+  # Secrets and Google OAuth settings (GOOGLE_CLIENT_ID, ...). Optional: the app has dev defaults.
+  env_file:
+    - path: ./backend/.env
+      required: false
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: clickshield
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d clickshield"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # API: runs `alembic upgrade head` on start (RUN_MIGRATIONS), then uvicorn.
+  backend:
+    <<: *backend-common
+    command: ["api"]
+    environment:
+      <<: *backend-env
+      RUN_MIGRATIONS: "true"
+      # Only the frontend's nginx (fixed IP below) may set X-Forwarded-For (task 001).
+      TRUSTED_PROXY_CIDRS: 172.28.0.10/32
+      FRONTEND_APP_URL: http://localhost:8080
+      API_CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+    ports:
+      - "8000:8000"   # tracking script + /api/v1/track, OAuth callback
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s   # migrations run before the server listens
+
+  # Protection worker: sends queued exclusions to Google Ads and runs scheduled retries.
+  worker:
+    <<: *backend-common
+    command: ["worker"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      backend:
+        condition: service_healthy   # schema is migrated once the API is healthy
+    healthcheck:
+      # The worker touches this file every pass; stale for 60s = hung.
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/clickshield-worker-heartbeat') > 60)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Dashboard (static build) + /api proxy to the backend.
+  frontend:
+    build:
+      context: ./clickshield-frontend
+    image: clickshield-frontend:local
+    restart: unless-stopped
+    environment:
+      BACKEND_UPSTREAM: http://backend:8000
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.28.0.10
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  pgdata:
+  redisdata:

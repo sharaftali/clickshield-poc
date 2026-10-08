@@ -22,6 +22,9 @@ class Settings(BaseSettings):
         description="development | staging | production",
     )
     DEBUG: bool = False
+    # Containers (Docker / ECS) log to stdout only; the rotating file under logs/
+    # is for running directly on a developer machine.
+    LOG_TO_FILE: bool = True
 
     # ---- Database ----
     DATABASE_URL: str = Field(
@@ -144,6 +147,8 @@ class Settings(BaseSettings):
     ACTION_QUEUE_RETRY_MAX_BACKOFF_SECONDS: int = 3600  # cap on a single delay
     ACTION_QUEUE_STUCK_AFTER_SECONDS: int = 600         # PROCESSING longer than this = worker died
     ACTION_QUEUE_WORKER_CONCURRENCY: int = 4
+    WORKER_POLL_SECONDS: float = 5.0   # how often the worker checks for due actions
+    WORKER_BATCH_SIZE: int = 20        # actions per pass (kept small for fast shutdown)
 
     # ---- Bootstrap Admin (first-run seeding only) ----
     DEFAULT_ORGANIZATION_NAME: str = "Default Organization"

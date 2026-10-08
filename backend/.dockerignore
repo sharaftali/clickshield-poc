@@ -1,0 +1,23 @@
+# Secrets and local environment — configuration comes from container env vars
+.env
+.env.*
+.venv/
+venv/
+
+# Local artifacts
+logs/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Not needed at runtime
+tests/
+pytest.ini
+requirements-dev.txt
+scripts/
+docker-compose.yml
+DEPLOYMENT.md
+.gitignore

@@ -38,10 +38,8 @@ def setup_logging() -> None:
     """
     Configure root logger with:
       - Console handler (stdout)
-      - Rotating file handler (logs/clickshield.log)
+      - Rotating file handler (logs/clickshield.log), unless LOG_TO_FILE is false
     """
-    LOG_DIR.mkdir(exist_ok=True)
-
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if settings.DEBUG else logging.INFO)
 
@@ -58,15 +56,17 @@ def setup_logging() -> None:
     root.addHandler(console)
 
     # ---- Rotating file handler ----
-    file_handler = logging.handlers.RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=10 * 1024 * 1024,   # 10 MB
-        backupCount=5,                # keep clickshield.log.1 .. .5
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG if settings.DEBUG else logging.INFO)
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
+    if settings.LOG_TO_FILE:
+        LOG_DIR.mkdir(exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=10 * 1024 * 1024,   # 10 MB
+            backupCount=5,                # keep clickshield.log.1 .. .5
+            encoding="utf-8",
+        )
+        file_handler.setLevel(logging.DEBUG if settings.DEBUG else logging.INFO)
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
 
     # ---- Quiet down noisy libraries ----
     for name, level in NOISY_LOGGERS.items():
@@ -74,6 +74,6 @@ def setup_logging() -> None:
 
     logging.getLogger(__name__).info(
         "Logging configured (file=%s, level=%s)",
-        LOG_FILE,
+        LOG_FILE if settings.LOG_TO_FILE else "stdout only",
         logging.getLevelName(root.level),
     )

@@ -1,0 +1,51 @@
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    client_max_body_size 1m;
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    # Container / load-balancer health check
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Dashboard API. The backend only trusts X-Forwarded-For from this proxy
+    # (TRUSTED_PROXY_CIDRS), so the real client IP survives the hop.
+    location /api/ {
+        proxy_pass ${BACKEND_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # Hashed build assets never change
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # Always revalidate the app shell so new deploys are picked up
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # SPA routes (/sessions, /google, ...) fall back to the app shell
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

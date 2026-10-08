@@ -1,5 +1,7 @@
 # Deployment notes
 
+Docker Compose, the container images and the AWS layout are described in [deploy/README.md](../deploy/README.md). The container entrypoint (`docker/entrypoint.sh`) already starts uvicorn with the flags below.
+
 ## Client IP resolution (task 001)
 
 Click Shield creates Google Ads IP exclusions for the client IP it records, so that IP must not be spoofable.

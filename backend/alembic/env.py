@@ -3,10 +3,13 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from app.core.config import settings
 from app.models import Base
+
+# Arbitrary constant shared by every process that migrates this database.
+MIGRATION_LOCK_KEY = 724_001_337
 
 
 config = context.config
@@ -46,15 +49,25 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            compare_server_default=True,
-        )
+        # Several API containers can start at once (docker compose scale, ECS
+        # deployments) and each runs `alembic upgrade head`. A session-level
+        # advisory lock makes them migrate one at a time; the later ones then
+        # find the schema already at head and do nothing.
+        connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
+        connection.commit()  # end the implicit transaction; the lock stays held
+        try:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                compare_server_default=True,
+            )
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK_KEY})
+            connection.commit()
 
 
 if context.is_offline_mode():
