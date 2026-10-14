@@ -370,26 +370,27 @@ export default function GooglePage() {
                   <th>Status</th>
                   <th>IP Exclusion Support</th>
                   <th>IP Exclusions Used</th>
+                  <th>Locations</th>
                   <th>Protection</th>
                 </tr>
               </thead>
               <tbody>
                 {campaignsLoading ? (
                   <tr>
-                    <td colSpan={7} className="empty-state">
+                    <td colSpan={8} className="empty-state">
                       <div className="spinner" />
                       <span>Loading campaigns...</span>
                     </td>
                   </tr>
                 ) : !hasSelectedCustomer ? (
                   <tr>
-                    <td colSpan={7} className="empty-state">
+                    <td colSpan={8} className="empty-state">
                       Select a Google Ads customer account first, then sync campaigns.
                     </td>
                   </tr>
                 ) : !campaigns || campaigns.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty-state">
+                    <td colSpan={8} className="empty-state">
                       No campaigns synced yet. Click <strong>Sync Campaigns</strong> to load Google Ads campaigns.
                     </td>
                   </tr>
@@ -422,6 +423,9 @@ export default function GooglePage() {
                         ) : (
                           "—"
                         )}
+                      </td>
+                      <td style={{ fontSize: 12, maxWidth: 200 }} title={campaign.geo_target_type ?? undefined}>
+                        <LocationSummary campaign={campaign} />
                       </td>
                       <td>
                         <button
@@ -476,5 +480,24 @@ function InfoIcon({ size }: { size: number }) {
       <line x1="8" y1="7" x2="8" y2="11" />
       <circle cx="8" cy="5" r="0.5" fill="currentColor" stroke="none" />
     </svg>
+  );
+}
+
+/** Location targeting (task 018): what GEO_ANOMALY compares visitors with. */
+function LocationSummary({ campaign }: { campaign: GoogleCampaignOut }) {
+  const included = campaign.locations.filter((l) => !l.negative);
+  const excluded = campaign.locations.filter((l) => l.negative);
+  if (campaign.locations.length === 0) return <span style={{ color: "var(--text-muted)" }}>All locations</span>;
+  const name = (l: GoogleCampaignOut["locations"][number]) => l.name ?? l.country_code ?? "?";
+  return (
+    <div>
+      {included.length > 0 && <div>{included.slice(0, 3).map(name).join(", ")}{included.length > 3 ? ` +${included.length - 3}` : ""}</div>}
+      {excluded.length > 0 && (
+        <div style={{ color: "var(--text-muted)" }}>excl. {excluded.slice(0, 2).map(name).join(", ")}{excluded.length > 2 ? ` +${excluded.length - 2}` : ""}</div>
+      )}
+      {campaign.geo_target_type === "PRESENCE_OR_INTEREST" && (
+        <div style={{ color: "var(--text-muted)", fontSize: 11 }}>incl. people interested</div>
+      )}
+    </div>
   );
 }

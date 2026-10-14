@@ -2,6 +2,7 @@ import { api } from "../lib/api";
 import type {
   AuthResponse,
   AuthenticatedUserResponse,
+  DashboardAnomaly,
   DashboardFraudEvent,
   DashboardOverview,
   DashboardSessionSummary,
@@ -17,6 +18,10 @@ import type {
   RefreshTokenRequest,
   TokenPair,
   OrganizationResponse,
+  OrganizationUpdate,
+  FraudRule,
+  RuleUpdate,
+  Verdict,
   ProtectionExclusionResponse,
   ProtectionQueueStatus,
   ProtectionAction,
@@ -52,11 +57,15 @@ export const dashboardApi = {
   overview: () =>
     api.get<DashboardOverview>("/dashboard/overview").then((r) => r.data),
 
-  /** GET /api/v1/dashboard/sessions?limit=N */
-  sessions: (limit = 20) =>
+  /** GET /api/v1/dashboard/sessions?limit=N&verdict=FLAG (verdict FLAG = review queue) */
+  sessions: (limit = 20, verdict?: Verdict) =>
     api
-      .get<DashboardSessionSummary[]>("/dashboard/sessions", { params: { limit } })
+      .get<DashboardSessionSummary[]>("/dashboard/sessions", { params: { limit, verdict } })
       .then((r) => r.data),
+
+  /** GET /api/v1/dashboard/anomalies?hours=N — campaign traffic anomalies */
+  anomalies: (hours = 24) =>
+    api.get<DashboardAnomaly[]>("/dashboard/anomalies", { params: { hours } }).then((r) => r.data),
 
   /** PATCH /api/v1/dashboard/sessions/:id/feedback */
   setSessionFeedback: (sessionId: string, clientVerdict: ClientVerdict) =>
@@ -85,6 +94,24 @@ export const orgApi = {
   /** GET /api/v1/organizations/me */
   me: () =>
     api.get<OrganizationResponse>("/organizations/me").then((r) => r.data),
+
+  /** PATCH /api/v1/organizations/me — protection mode / custom thresholds (owner, admin) */
+  update: (body: OrganizationUpdate) =>
+    api.patch<OrganizationResponse>("/organizations/me", body).then((r) => r.data),
+};
+
+// ─── Rules ────────────────────────────────────────────────────────────────────
+
+export const rulesApi = {
+  /** GET /api/v1/rules — effective rules for this organization */
+  list: () => api.get<FraudRule[]>("/rules").then((r) => r.data),
+
+  /** PATCH /api/v1/rules/:code — organization override (owner, admin) */
+  update: (code: string, body: RuleUpdate) =>
+    api.patch<FraudRule>(`/rules/${code}`, body).then((r) => r.data),
+
+  /** DELETE /api/v1/rules/:code/override — back to the global values */
+  reset: (code: string) => api.delete<FraudRule>(`/rules/${code}/override`).then((r) => r.data),
 };
 
 // ─── Protection ───────────────────────────────────────────────────────────────

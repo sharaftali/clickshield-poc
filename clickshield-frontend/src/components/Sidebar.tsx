@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { to: "/protection", label: "Protection", icon: ShieldIcon },
   { to: "/google", label: "Google Ads", icon: GoogleIcon },
   { to: "/audit-log", label: "Audit Log", icon: AuditIcon },
+  { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export default function Sidebar() {
@@ -109,6 +110,10 @@ function GoogleIcon({ size }: { size: number }) {
 }
 function AuditIcon({ size }: { size: number }) {
   return <Icon size={size}><path d="M4 1.5h6l3 3V14a.5.5 0 01-.5.5h-8.5A.5.5 0 013.5 14V2a.5.5 0 01.5-.5z"/><polyline points="10 1.5 10 4.5 13 4.5"/><line x1="5.5" y1="8" x2="10.5" y2="8"/><line x1="5.5" y1="10.5" x2="10.5" y2="10.5"/></Icon>;
+}
+
+function SettingsIcon({ size }: { size: number }) {
+  return <Icon size={size}><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/><circle cx="5" cy="4" r="1.5" fill="white"/><circle cx="10.5" cy="8" r="1.5" fill="white"/><circle cx="7" cy="12" r="1.5" fill="white"/></Icon>;
 }
 
 function ShieldSolidIcon() {

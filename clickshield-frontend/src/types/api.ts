@@ -60,11 +60,14 @@ export interface AuthenticatedUserResponse {
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
 export type Verdict = "SAFE" | "MONITOR" | "FLAG" | "FRAUD";
+export type RiskBand = "LOW" | "MODERATE" | "HIGH" | "VERY_HIGH";
+export type RuleCategory = "NETWORK" | "REPUTATION" | "VELOCITY" | "BEHAVIOR" | "AUTOMATION" | "GEO" | "ANOMALY";
 
 export interface DashboardOverview {
   total_sessions: number;
   suspicious_sessions: number;
   fraud_sessions: number;
+  review_sessions: number;
   protected_ips: number;
   average_risk_score: number;
   high_confidence_traffic: number;
@@ -76,7 +79,12 @@ export interface DashboardSessionSummary {
   verdict: Verdict;
   risk_score: number;
   confidence_score: number;
+  risk_band: RiskBand;
+  signal_diversity: number;
+  risk_categories: Partial<Record<RuleCategory, number>> | null;
+  scoring_version: number | null;
   ip_address: string | null;
+  country: string | null;
   device: string | null;
   browser: string | null;
   landing_page: string | null;
@@ -84,6 +92,12 @@ export interface DashboardSessionSummary {
   click_count: number;
   is_vpn: boolean;
   is_proxy: boolean;
+  is_tor: boolean;
+  is_datacenter: boolean;
+  session_duration_seconds: number;
+  clicks_60_seconds: number;
+  ad_click_interval_cv: number | null;
+  event_interval_min_ms: number | null;
   client_verdict: ClientVerdict | null;
   final_label: Verdict | null;
 }
@@ -97,7 +111,22 @@ export interface DashboardFraudEvent {
   score_contribution: number;
   rule_confidence: number;
   triggered: boolean;
+  category: RuleCategory | null;
+  rule_version: number | null;
   created_at: string;
+}
+
+export interface DashboardAnomaly {
+  id: string;
+  campaign_name: string;
+  campaign_id: string;
+  window_start: string;
+  window_end: string;
+  metric: "ad_landings" | "median_click_interval" | "ad_landings_drop";
+  observed: number;
+  expected: number;
+  score: number;
+  level: "MEDIUM" | "HIGH";
 }
 
 export interface DashboardTopIP {
@@ -231,6 +260,16 @@ export interface GoogleCampaignOut {
   exclusion_used: number;
   exclusion_limit: number;
   supports_ip_exclusion: boolean;
+  geo_target_type: string | null;
+  locations: CampaignLocation[];
+}
+
+export interface CampaignLocation {
+  country_code: string | null;
+  region: string | null;
+  name: string | null;
+  target_type: string | null;
+  negative: boolean;
 }
 
 export interface CampaignSyncSummary {
@@ -242,10 +281,53 @@ export interface CampaignSyncSummary {
 
 // ─── Organization ─────────────────────────────────────────────────────────────
 
+export interface ProtectionPolicy {
+  mode: ProtectionMode;
+  flag_risk: number;
+  fraud_risk: number;
+  fraud_confidence: number;
+  min_diversity: number;
+  auto_exclude: boolean;
+}
+
+export type ProtectionSettings = Omit<ProtectionPolicy, "mode">;
+
 export interface OrganizationResponse {
   id: string;
   name: string;
   slug: string;
   protection_mode: ProtectionMode;
   is_active: boolean;
+  protection_settings: ProtectionSettings | null;
+  policy: ProtectionPolicy | null;
+  mode_defaults: Record<string, ProtectionPolicy>;
+}
+
+export interface OrganizationUpdate {
+  protection_mode?: ProtectionMode;
+  protection_settings?: Partial<ProtectionSettings>;
+}
+
+// ─── Rules ────────────────────────────────────────────────────────────────────
+
+export type RuleParamValue = number | string | boolean | null | string[];
+
+export interface FraudRule {
+  code: string;
+  name: string;
+  description: string;
+  category: RuleCategory;
+  enabled: boolean;
+  weight: number;
+  confidence: number;
+  params: Record<string, RuleParamValue>;
+  version: number;
+  defaults: { enabled: boolean; weight: number; params: Record<string, RuleParamValue> };
+  override: { enabled: boolean | null; weight: number | null; params: Record<string, RuleParamValue> | null; version: number } | null;
+}
+
+export interface RuleUpdate {
+  enabled?: boolean | null;
+  weight?: number | null;
+  params?: Record<string, RuleParamValue> | null;
 }

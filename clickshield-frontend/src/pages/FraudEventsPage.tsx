@@ -22,6 +22,7 @@ export default function FraudEventsPage() {
       (e) =>
         e.rule_name.toLowerCase().includes(q) ||
         e.reason_code.toLowerCase().includes(q) ||
+        (e.category && e.category.toLowerCase().includes(q)) ||
         (e.reason_text && e.reason_text.toLowerCase().includes(q)) ||
         e.session_id.toLowerCase().includes(q)
     );
@@ -52,14 +53,17 @@ export default function FraudEventsPage() {
       <main className="page-body">
         <div className="page-header">
           <h1>Detected Fraud Incidents</h1>
-          <p>Rule execution triggers, heuristic anomaly weights, and fraud reasons identified by the detection engine.</p>
+          <p>
+            Every rule that fired, with its category. Rules in the same category share diminishing returns; a FRAUD
+            verdict needs several independent categories.
+          </p>
         </div>
 
         {/* Search */}
         <div style={{ marginBottom: 16, maxWidth: 380 }}>
           <input
             type="text"
-            placeholder="Search by rule, reason code, or session ID..."
+            placeholder="Search by rule, category, or session ID..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="form-input"
@@ -73,8 +77,8 @@ export default function FraudEventsPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Rule Name</th>
-                  <th>Reason Code</th>
+                  <th>Rule</th>
+                  <th>Category</th>
                   <th>Description</th>
                   <th>Score Impact</th>
                   <th>Confidence</th>
@@ -101,9 +105,13 @@ export default function FraudEventsPage() {
                   filteredEvents.map((e) => (
                     <tr key={e.id}>
                       <td>
-                        <span className="badge badge-fraud">{e.rule_name}</span>
+                        <span className="badge badge-fraud" title={e.rule_version ? `Rule version ${e.rule_version}` : undefined}>
+                          {e.rule_name}
+                        </span>
                       </td>
-                      <td style={{ fontWeight: 600, fontSize: 12.5 }}>{e.reason_code}</td>
+                      <td style={{ fontWeight: 600, fontSize: 12 }}>
+                        {e.category ? <span className="chip">{e.category.toLowerCase()}</span> : <span style={{ color: "var(--text-muted)" }}>—</span>}
+                      </td>
                       <td style={{ fontSize: 12.5, color: "var(--text-secondary)", maxWidth: 220 }}>
                         {e.reason_text ?? "Rule condition threshold met"}
                       </td>

@@ -1,4 +1,4 @@
-import type { Verdict, ExclusionStatus } from "../types/api";
+import type { Verdict, ExclusionStatus, RiskBand, RuleCategory } from "../types/api";
 
 export function verdictBadge(verdict: Verdict): string {
   const map: Record<Verdict, string> = {
@@ -22,10 +22,28 @@ export function exclusionBadge(status: ExclusionStatus): string {
   return map[status] ?? "badge";
 }
 
+// Spec §24 bands: 0–29 LOW, 30–59 MODERATE, 60–79 HIGH, 80+ VERY HIGH.
 export function riskColor(score: number): string {
   if (score >= 80) return "var(--red)";
-  if (score >= 50) return "var(--amber)";
+  if (score >= 30) return "var(--amber)";
   return "var(--green)";
+}
+
+export function bandLabel(band: RiskBand | null | undefined): string {
+  const map: Record<RiskBand, string> = {
+    LOW: "Low risk",
+    MODERATE: "Moderate risk",
+    HIGH: "High risk",
+    VERY_HIGH: "Very high risk",
+  };
+  return band ? map[band] ?? band : "—";
+}
+
+/** [category, points] sorted by contribution, largest first. */
+export function categoryList(categories: Partial<Record<RuleCategory, number>> | null | undefined): [RuleCategory, number][] {
+  return Object.entries(categories ?? {})
+    .filter(([, points]) => (points ?? 0) > 0)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0)) as [RuleCategory, number][];
 }
 
 export function fmtDate(iso: string): string {

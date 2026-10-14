@@ -2,7 +2,19 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { dashboardApi } from "../services/apiService";
 import { verdictBadge, riskColor, fmtDate, fmtNumber } from "../lib/utils";
-import type { DashboardOverview, DashboardSessionSummary, DashboardFraudEvent, DashboardTopIP } from "../types/api";
+import type {
+  DashboardAnomaly,
+  DashboardOverview,
+  DashboardSessionSummary,
+  DashboardFraudEvent,
+  DashboardTopIP,
+} from "../types/api";
+
+const ANOMALY_LABELS: Record<DashboardAnomaly["metric"], string> = {
+  ad_landings: "Click spike",
+  median_click_interval: "Clicks unusually close together",
+  ad_landings_drop: "Traffic stopped — tracking removed?",
+};
 
 export default function OverviewPage() {
   const { data: overview, isLoading: overviewLoading, refetch: refetchOverview } = useQuery<DashboardOverview>({
@@ -29,6 +41,12 @@ export default function OverviewPage() {
     refetchInterval: 10000,
   });
 
+  const { data: anomalies } = useQuery<DashboardAnomaly[]>({
+    queryKey: ["dashboard", "anomalies"],
+    queryFn: () => dashboardApi.anomalies(24),
+    refetchInterval: 60000,
+  });
+
   const statItems = [
     {
       label: "Total Sessions",
@@ -38,7 +56,13 @@ export default function OverviewPage() {
     {
       label: "Suspicious Traffic",
       value: overview ? fmtNumber(overview.suspicious_sessions) : "—",
-      sub: "Sessions requiring review",
+      sub: "Monitor, flag or fraud",
+    },
+    {
+      label: "Needs Review",
+      value: overview ? fmtNumber(overview.review_sessions) : "—",
+      sub: "FLAG sessions awaiting feedback",
+      link: "/sessions",
     },
     {
       label: "Fraud Detected",
@@ -81,10 +105,59 @@ export default function OverviewPage() {
             <div key={idx} className="stat-card">
               <div className="stat-label">{stat.label}</div>
               <div className="stat-value">{overviewLoading ? "..." : stat.value}</div>
-              <div className="stat-sub">{stat.sub}</div>
+              <div className="stat-sub">
+                {"link" in stat && stat.link ? <Link to={stat.link}>{stat.sub}</Link> : stat.sub}
+              </div>
             </div>
           ))}
         </section>
+
+        {/* Campaign traffic anomalies (last 24 hours) */}
+        {anomalies && anomalies.length > 0 && (
+          <div className="card section-gap">
+            <div className="card-header">
+              <div>
+                <h2 className="card-title">Traffic Anomalies</h2>
+                <div className="card-subtitle">
+                  Campaign hours far outside their usual pattern (last 24 hours). Context for the fraud engine, never a
+                  block on their own.
+                </div>
+              </div>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Level</th>
+                    <th>Campaign</th>
+                    <th>What</th>
+                    <th>Observed</th>
+                    <th>Usual</th>
+                    <th>Hour</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {anomalies.map((a) => (
+                    <tr key={a.id}>
+                      <td>
+                        <span className={a.level === "HIGH" ? "badge badge-fraud" : "badge badge-monitor"}>{a.level}</span>
+                      </td>
+                      <td style={{ fontSize: 12.5 }}>{a.campaign_name}</td>
+                      <td style={{ fontSize: 12.5 }}>{ANOMALY_LABELS[a.metric] ?? a.metric}</td>
+                      <td style={{ fontWeight: 600 }}>
+                        {a.metric === "median_click_interval" ? `${a.observed}s apart` : `${a.observed} clicks`}
+                      </td>
+                      <td style={{ color: "var(--text-muted)" }}>
+                        {a.metric === "median_click_interval" ? `${a.expected}s` : a.expected}
+                      </td>
+                      <td style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{fmtDate(a.window_start)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* Two Column Section: Recent Sessions + Recent Fraud Events */}
         <div className="two-col section-gap">

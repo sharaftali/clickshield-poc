@@ -1,19 +1,24 @@
 import { useState, useMemo } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../services/apiService";
-import { verdictBadge, riskColor, fmtDate } from "../lib/utils";
+import { verdictBadge, riskColor, fmtDate, bandLabel, categoryList } from "../lib/utils";
 import type { ClientVerdict, DashboardSessionSummary, Verdict } from "../types/api";
 
-const VERDICT_FILTERS: Array<"ALL" | Verdict> = ["ALL", "SAFE", "MONITOR", "FLAG", "FRAUD"];
+type SessionFilter = "ALL" | "REVIEW" | Verdict;
+const VERDICT_FILTERS: SessionFilter[] = ["ALL", "REVIEW", "SAFE", "MONITOR", "FLAG", "FRAUD"];
+const FILTER_LABELS: Partial<Record<SessionFilter, string>> = { REVIEW: "Needs review" };
 
 export default function SessionsPage() {
   const [limit, setLimit] = useState(50);
-  const [selectedVerdict, setSelectedVerdict] = useState<"ALL" | Verdict>("ALL");
+  const [selectedVerdict, setSelectedVerdict] = useState<SessionFilter>("ALL");
   const [search, setSearch] = useState("");
+  // "Needs review" = FLAG sessions without client feedback, fetched from the server so
+  // older ones show up too (task 017). Other filters work on the loaded page.
+  const review = selectedVerdict === "REVIEW";
 
   const { data: sessions, isLoading, refetch, isFetching } = useQuery<DashboardSessionSummary[]>({
-    queryKey: ["dashboard", "sessions", limit],
-    queryFn: () => dashboardApi.sessions(limit),
+    queryKey: ["dashboard", "sessions", limit, review],
+    queryFn: () => dashboardApi.sessions(limit, review ? "FLAG" : undefined),
     refetchInterval: 10000,
   });
 
@@ -28,7 +33,9 @@ export default function SessionsPage() {
   const filteredSessions = useMemo(() => {
     if (!sessions) return [];
     return sessions.filter((s) => {
-      const matchVerdict = selectedVerdict === "ALL" || s.verdict === selectedVerdict;
+      const matchVerdict =
+        selectedVerdict === "ALL" ||
+        (review ? s.client_verdict === null : s.verdict === selectedVerdict);
       const q = search.toLowerCase();
       const matchSearch =
         !q ||
@@ -38,7 +45,7 @@ export default function SessionsPage() {
         (s.landing_page && s.landing_page.toLowerCase().includes(q));
       return matchVerdict && matchSearch;
     });
-  }, [sessions, selectedVerdict, search]);
+  }, [sessions, selectedVerdict, review, search]);
 
   return (
     <>
@@ -65,7 +72,10 @@ export default function SessionsPage() {
       <main className="page-body">
         <div className="page-header">
           <h1>Tracked Traffic Sessions</h1>
-          <p>Real-time analysis of click fingerprints, IP reputation, and behavioral anomaly scores.</p>
+          <p>
+            Every session's risk, how sure the engine is, and how many independent kinds of evidence it rests on.
+            FLAG sessions are never excluded automatically: review them and give feedback.
+          </p>
         </div>
 
         {/* Filter Bar */}
@@ -77,7 +87,7 @@ export default function SessionsPage() {
                 className={`btn btn-sm ${selectedVerdict === v ? "btn-primary" : "btn-secondary"}`}
                 onClick={() => setSelectedVerdict(v)}
               >
-                {v}
+                {FILTER_LABELS[v] ?? v}
               </button>
             ))}
           </div>
@@ -143,8 +153,25 @@ export default function SessionsPage() {
                             />
                           </div>
                           <span style={{ fontSize: 12, fontWeight: 600 }}>{s.risk_score}</span>
-                          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>({s.confidence_score}%)</span>
+                          <span style={{ fontSize: 11, color: "var(--text-muted)" }} title="Confidence in this verdict">
+                            ({s.confidence_score}%)
+                          </span>
                         </div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3 }}>
+                          {bandLabel(s.risk_band)} &bull;{" "}
+                          <span title="Independent signal categories">
+                            {s.signal_diversity} {s.signal_diversity === 1 ? "signal type" : "signal types"}
+                          </span>
+                        </div>
+                        {categoryList(s.risk_categories).length > 0 && (
+                          <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 3, maxWidth: 220 }}>
+                            {categoryList(s.risk_categories).map(([category, points]) => (
+                              <span key={category} className="chip" style={{ fontSize: 10 }} title={`${category}: +${points} risk`}>
+                                {category.toLowerCase()} +{points}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td className="text-mono" style={{ fontWeight: 550 }}>
                         {s.ip_address ?? "Unknown"}
@@ -157,7 +184,12 @@ export default function SessionsPage() {
                         <div style={{ display: "flex", gap: 4 }}>
                           {s.is_vpn && <span className="chip" style={{ color: "var(--amber)", background: "var(--amber-l)" }}>VPN</span>}
                           {s.is_proxy && <span className="chip" style={{ color: "var(--orange)", background: "var(--orange-l)" }}>Proxy</span>}
-                          {!s.is_vpn && !s.is_proxy && <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>}
+                          {s.is_tor && <span className="chip" style={{ color: "var(--red)", background: "var(--red-soft)" }}>Tor</span>}
+                          {s.is_datacenter && <span className="chip">Datacenter</span>}
+                          {s.country && <span className="chip">{s.country}</span>}
+                          {!s.is_vpn && !s.is_proxy && !s.is_tor && !s.is_datacenter && !s.country && (
+                            <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>
+                          )}
                         </div>
                       </td>
                       <td style={{ fontSize: 12.5 }}>
