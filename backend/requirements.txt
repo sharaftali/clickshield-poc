@@ -15,5 +15,6 @@ PyJWT==2.9.*
 httpx==0.27.*
 python-multipart==0.0.*
 email-validator==2.*
+tzdata>=2025.1  # IANA timezone → country table for GEO_TIMEZONE_MISMATCH (task 018)
 
 # Dev / test tooling lives in requirements-dev.txt (not installed in the Docker image).

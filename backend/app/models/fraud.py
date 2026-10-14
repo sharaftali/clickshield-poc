@@ -13,7 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import INET, UUID
+from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -101,5 +101,11 @@ class FraudEvent(Base, TimestampMixin):
     rule_confidence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     triggered: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Rule category (task 014) and the rule configuration that produced this result
+    # (task 015), so past decisions stay explainable after a rule changes.
+    category: Mapped[str | None] = mapped_column(String(20))
+    rule_version: Mapped[int | None] = mapped_column(Integer)
+    rule_config: Mapped[dict | None] = mapped_column(JSONB)
 
     session = relationship("Session", back_populates="fraud_events")

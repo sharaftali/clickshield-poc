@@ -14,6 +14,7 @@ from app.models import (
     EventType,
     GoogleCampaign,
     GoogleConnection,
+    Organization,
     Session,
     Verdict,
     Visitor,
@@ -22,8 +23,10 @@ from app.models import (
 from app.core.config import settings
 from app.core.queue import enqueue_actions
 from app.schemas.tracking import TrackingBatchIn, TrackingResponse
+from app.services.features import apply_event_interval_features, apply_landing_features, device_key
 from app.services.fraud_engine import FraudEngine
 from app.services.ip_intel import IPIntelService
+from app.services.protection_policy import get_policy
 from app.services.protection_service import enqueue_exclusion_for_session
 
 logger = logging.getLogger(__name__)
@@ -133,6 +136,8 @@ class TrackingService:
         first = payload.events[0]
 
         website = await self._get_website(first.site_token)
+        # The organization's protection mode decides what a score means (task 016).
+        policy = get_policy(await self.db.get(Organization, website.organization_id))
         logger.info(
             "Ingesting %d events for site=%s visitor=%s session=%s ip=%s",
             len(payload.events),
@@ -172,11 +177,14 @@ class TrackingService:
 
         self._update_session_counters(session, payload)
         await self._update_session_duration(session)
+        await apply_event_interval_features(self.db, session)
 
-        # Velocity is fixed at landing time; later batches of the session don't recount it.
+        # Velocity, repeat counts and click timing are fixed at landing time;
+        # later batches of the session don't recount them.
         if session_is_new and self._is_paid_landing(first, payload):
             session.ad_landing_at = datetime.now(timezone.utc)
             await self._apply_ad_click_velocity(session)
+            await apply_landing_features(self.db, session)
 
         previous_verdict = session.verdict
         await self.fraud_engine.score(
@@ -184,6 +192,7 @@ class TrackingService:
             session,
             is_new_session=session_is_new,
             previous_verdict=previous_verdict,
+            policy=policy,
         )
 
         # Automatic protection (spec §42): the session just became FRAUD → queue the
@@ -191,6 +200,7 @@ class TrackingService:
         protection_action_ids = []
         if (
             settings.AUTO_PROTECTION_ENABLED
+            and policy.auto_exclude
             and session.verdict == Verdict.FRAUD
             and previous_verdict != Verdict.FRAUD
         ):
@@ -309,6 +319,10 @@ class TrackingService:
         user_agent = request.headers.get("user-agent") or ""
         is_google_ads_traffic = self._is_google_ads_traffic(first_event)
         language = first_event.language or request.headers.get("accept-language", "").split(",")[0].strip() or None
+        browser = self._detect_browser(user_agent)
+        operating_system = self._detect_os(user_agent)
+        device = self._detect_device(user_agent, first_event.payload)
+        client = first_event.payload or {}
 
         session = Session(
             organization_id=website.organization_id,
@@ -334,12 +348,22 @@ class TrackingService:
             is_proxy=ip_data.get("is_proxy", False),
             is_tor=ip_data.get("is_tor", False),
             is_datacenter=ip_data.get("is_datacenter", False),
-            device=self._detect_device(user_agent, first_event.payload),
-            browser=self._detect_browser(user_agent),
-            os=self._detect_os(user_agent),
+            device=device,
+            browser=browser,
+            os=operating_system,
             language=language,
             timezone=first_event.timezone,
             user_agent=user_agent or None,
+            device_key=device_key(
+                website.organization_id,
+                browser=browser,
+                os=operating_system,
+                device=device,
+                screen_width=client.get("screen_width"),
+                screen_height=client.get("screen_height"),
+                timezone_name=first_event.timezone,
+                language=language,
+            ),
             extra_signals=self._build_extra_signals(first_event, is_google_ads_traffic),
             system_verdict=Verdict.SAFE,
             verdict=Verdict.SAFE,

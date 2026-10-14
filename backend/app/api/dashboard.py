@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import case, func, select
@@ -8,10 +9,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.dependencies.auth import CurrentUser
-from app.models import AuditResult, ClientVerdict, Exclusion, FraudEvent, Session, Verdict
+from app.models import (
+    AuditResult,
+    ClientVerdict,
+    Exclusion,
+    FraudEvent,
+    GoogleCampaign,
+    Session,
+    TrafficAnomaly,
+    Verdict,
+)
 from app.services import audit_service
 from app.services.audit_service import AuditAction
+from app.services.ip_reputation import build_feedback_counter_update, counter_label
 from app.schemas.dashboard import (
+    DashboardAnomaly,
     DashboardFraudEvent,
     DashboardOverview,
     DashboardSessionSummary,
@@ -45,6 +57,15 @@ async def dashboard_overview(
         .select_from(Session)
         .where(Session.organization_id == org_id, Session.verdict == Verdict.FRAUD)
     )
+    review_sessions = await db.scalar(
+        select(func.count())
+        .select_from(Session)
+        .where(
+            Session.organization_id == org_id,
+            Session.verdict == Verdict.FLAG,
+            Session.client_verdict.is_(None),
+        )
+    )
     protected_ips = await db.scalar(
         select(func.count())
         .select_from(Exclusion)
@@ -71,6 +92,7 @@ async def dashboard_overview(
         total_sessions=int(total_sessions or 0),
         suspicious_sessions=int(suspicious_sessions or 0),
         fraud_sessions=int(fraud_sessions or 0),
+        review_sessions=int(review_sessions or 0),
         protected_ips=int(protected_ips or 0),
         average_risk_score=float(avg_risk or 0.0),
         high_confidence_traffic=int(high_confidence_traffic or 0),
@@ -82,13 +104,12 @@ async def recent_sessions(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
+    verdict: Verdict | None = Query(default=None, description="FLAG = the review queue (task 017)"),
 ) -> list[Session]:
-    result = await db.execute(
-        select(Session)
-        .where(Session.organization_id == current_user.organization_id)
-        .order_by(Session.created_at.desc())
-        .limit(limit)
-    )
+    query = select(Session).where(Session.organization_id == current_user.organization_id)
+    if verdict is not None:
+        query = query.where(Session.verdict == verdict)
+    result = await db.execute(query.order_by(Session.created_at.desc()).limit(limit))
     return list(result.scalars().all())
 
 
@@ -116,10 +137,18 @@ async def set_session_feedback(
         )
 
     previous_label = session.final_label
+    was_fraud = counter_label(session.verdict, previous_label)
     session.client_verdict = payload.client_verdict
     session.final_label = (
         Verdict.FRAUD if payload.client_verdict == ClientVerdict.FRAUD else Verdict.SAFE
     )
+    # Client feedback moves the session between this org's IP reputation counters (task 020);
+    # the reputation rules already read final_label from session history.
+    counters = build_feedback_counter_update(
+        session, was_fraud=was_fraud, is_fraud=session.final_label == Verdict.FRAUD
+    )
+    if counters is not None:
+        await db.execute(counters)
     audit_service.record(
         db,
         action=AuditAction.SESSION_FEEDBACK,
@@ -159,6 +188,34 @@ async def recent_fraud_events(
         .limit(limit)
     )
     return list(result.scalars().all())
+
+
+@router.get("/anomalies", response_model=list[DashboardAnomaly])
+async def recent_anomalies(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    hours: int = Query(default=24, ge=1, le=24 * 30),
+) -> list[dict[str, object]]:
+    """Campaign traffic anomalies (task 022) whose window ended in the last `hours`."""
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = (
+        await db.execute(
+            select(TrafficAnomaly, GoogleCampaign.name, GoogleCampaign.campaign_id)
+            .join(GoogleCampaign, GoogleCampaign.id == TrafficAnomaly.google_campaign_id)
+            .where(TrafficAnomaly.organization_id == current_user.organization_id, TrafficAnomaly.window_end >= since)
+            .order_by(TrafficAnomaly.window_start.desc(), TrafficAnomaly.score.desc())
+            .limit(50)
+        )
+    ).all()
+    return [
+        {
+            "id": anomaly.id, "campaign_name": name, "campaign_id": campaign_id,
+            "window_start": anomaly.window_start, "window_end": anomaly.window_end,
+            "metric": anomaly.metric, "observed": anomaly.observed, "expected": anomaly.expected,
+            "score": anomaly.score, "level": anomaly.level,
+        }
+        for anomaly, name, campaign_id in rows
+    ]
 
 
 @router.get("/top-ip-reputation", response_model=list[DashboardTopIP])

@@ -89,6 +89,12 @@ class Session(Base, TimestampMixin):
         Index("ix_sessions_visitor_ad_landing", "visitor_id", "ad_landing_at"),
         # IP reputation history: this org's other sessions on an IP (spec §14)
         Index("ix_sessions_org_ip_created", "organization_id", "ip_address", "created_at"),
+        # Repeat-visitor lookups by coarse device key (task 019)
+        Index("ix_sessions_org_device_ad_landing", "organization_id", "device_key", "ad_landing_at"),
+        # Campaign traffic statistics / anomaly detection (task 022)
+        Index("ix_sessions_campaign_ad_landing", "google_campaign_id", "ad_landing_at"),
+        # Review queue: FLAG sessions (task 017)
+        Index("ix_sessions_org_verdict_created", "organization_id", "verdict", "created_at"),
         # Browser-generated session tokens are only unique within a website (spec §58).
         UniqueConstraint("website_id", "session_token", name="uq_sessions_website_token"),
     )
@@ -153,6 +159,9 @@ class Session(Base, TimestampMixin):
     language: Mapped[str | None] = mapped_column(String(20))
     timezone: Mapped[str | None] = mapped_column(String(64))
     user_agent: Mapped[str | None] = mapped_column(Text)
+    # sha256 of coarse browser/OS/screen/timezone/language, salted per organization
+    # (spec §17, §19: aggregated, no raw fingerprint stored). Task 019.
+    device_key: Mapped[str | None] = mapped_column(String(64))
 
     # ---- Behavioral signals (spec §15) ----
     session_duration_seconds: Mapped[float] = mapped_column(
@@ -195,11 +204,36 @@ class Session(Base, TimestampMixin):
         Integer, default=0, nullable=False
     )
 
-    # ---- Scoring (spec §24, §28) ----
+    # ---- Click timing (spec §16, §20, task 021) ----
+    # Intervals between this source's paid ad landings (last 24h, visitor / IP / device
+    # key with the most landings). NULL with fewer than INTERVAL_MIN_SAMPLES intervals.
+    ad_click_interval_avg_s: Mapped[float | None] = mapped_column(Float)
+    ad_click_interval_min_s: Mapped[float | None] = mapped_column(Float)
+    ad_click_interval_var: Mapped[float | None] = mapped_column(Float)
+    ad_click_interval_cv: Mapped[float | None] = mapped_column(Float)
+    # Intervals between on-page actions (clicks, forms, …; not scroll) in this session.
+    event_interval_avg_ms: Mapped[float | None] = mapped_column(Float)
+    event_interval_min_ms: Mapped[float | None] = mapped_column(Float)
+    event_interval_var: Mapped[float | None] = mapped_column(Float)
+    event_interval_cv: Mapped[float | None] = mapped_column(Float)
+
+    # ---- Scoring (spec §24, §27, §28) ----
     risk_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     confidence_score: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
+    # LOW / MODERATE / HIGH / VERY_HIGH from risk_score (task 017)
+    risk_band: Mapped[str] = mapped_column(
+        String(16), default="LOW", server_default="LOW", nullable=False
+    )
+    # Independent rule categories with a meaningful contribution (task 014)
+    signal_diversity: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    # {category: contribution} after diminishing returns
+    risk_categories: Mapped[dict | None] = mapped_column(JSONB)
+    # Aggregation used (SCORING_VERSION); NULL for sessions scored before task 014
+    scoring_version: Mapped[int | None] = mapped_column(Integer)
 
     verdict: Mapped[Verdict] = mapped_column(
         Enum(Verdict, name="verdict_enum"),

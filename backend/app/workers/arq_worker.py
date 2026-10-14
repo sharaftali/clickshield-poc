@@ -9,6 +9,8 @@ Protection worker (spec §42–43), run with:
   re-queues actions left PROCESSING by a crashed worker, runs due actions and
   scheduled retries (including any whose job push failed), promotes campaign
   overflow queues and expires stale exclusions (task 012).
+- `anomaly_detection` (cron, every 5 minutes) — hourly campaign traffic stats and
+  statistical anomaly detection (task 022).
 
 Health: `arq --check app.workers.arq_worker.WorkerSettings` (docker / ECS).
 """
@@ -23,6 +25,7 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal, engine
 from app.core.logging_config import setup_logging
 from app.core.queue import PROCESS_ACTION_JOB, redis_settings
+from app.services.anomaly_service import run_anomaly_detection
 from app.services.exclusion_capacity import expire_stale_exclusions, rebalance_all
 from app.workers.action_worker import ActionWorker
 
@@ -67,6 +70,14 @@ async def sweep(ctx: dict) -> dict:
     return metrics
 
 
+async def anomaly_detection(ctx: dict) -> dict:
+    async with AsyncSessionLocal() as db:
+        metrics = await run_anomaly_detection(db)
+    if metrics.get("anomalies"):
+        logger.info("Anomaly detection: %s", metrics)
+    return metrics
+
+
 def _sweep_seconds() -> set[int]:
     step = max(1, min(60, settings.WORKER_SWEEP_SECONDS))
     return set(range(0, 60, step))
@@ -76,6 +87,7 @@ class WorkerSettings:
     functions = [process_action]
     cron_jobs = [
         cron(sweep, second=_sweep_seconds(), run_at_startup=True, unique=True, timeout=300),
+        cron(anomaly_detection, minute=set(range(0, 60, 5)), second=30, unique=True, timeout=600),
     ]
     redis_settings = redis_settings()
     on_startup = startup

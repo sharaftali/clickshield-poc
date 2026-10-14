@@ -49,6 +49,7 @@ from app.models import (
 )
 from app.services import tracking_service as tracking_module
 from app.services.ip_intel import IPIntelService
+from app.services.rules import repository as rule_repository
 from app.workers import action_worker as worker_module
 from app.workers.action_worker import ActionWorker
 
@@ -99,10 +100,22 @@ def migrated_database() -> str:
     return TEST_DATABASE_URL
 
 
+# Reference data seeded by migrations: kept between tests (tests that change it restore it).
+KEEP_TABLES = {"rules"}
+
+
+@pytest.fixture(autouse=True)
+def fresh_rule_cache():
+    """Rules are cached per process (task 015); every test starts from the database."""
+    rule_repository.invalidate()
+    yield
+    rule_repository.invalidate()
+
+
 @pytest.fixture
 async def sessionmaker(migrated_database):
     engine = create_async_engine(migrated_database, poolclass=NullPool)
-    tables = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
+    tables = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables if table.name not in KEEP_TABLES)
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
@@ -147,6 +160,9 @@ class World:
         paid: bool = True,
         gclid: str | None = None,
         user_agent: str = HUMAN_UA,
+        timezone_name: str | None = None,
+        screen: tuple[int, int] | None = None,
+        landing_path: str = "page",
     ) -> dict:
         """One browser session, posted to /api/v1/track as one batch. Returns the API response."""
         events = events or ["page_view"]
@@ -161,12 +177,15 @@ class World:
         batch = []
         for i, event_type in enumerate(events):
             payload = {"depth": scroll_depth} if event_type == "scroll" and scroll_depth is not None else {}
+            if screen is not None:
+                payload |= {"screen_width": screen[0], "screen_height": screen[1]}
             batch.append({
                 "site_token": self.website.tracking_token,
                 "visitor_token": visitor,
                 "session_token": session_token,
                 "event_type": event_type,
-                "page_url": f"https://{self.website.domain}/page-{i}",
+                "page_url": f"https://{self.website.domain}/{landing_path}-{i}",
+                "timezone": timezone_name,
                 "timestamp": (now - timedelta(seconds=duration) + timedelta(seconds=step * i)).isoformat(),
                 "payload": payload,
                 **attribution,
@@ -177,11 +196,11 @@ class World:
         assert response.status_code == 200, response.text
         return response.json()
 
-    def human(self, ip: str, **kwargs) -> dict:
+    def human(self, ip: str, duration: float = 120.0, **kwargs) -> dict:
         """Spec §75 test 1 behaviour: 2 minutes, 3 pages, scrolls, a few clicks."""
         events = ["page_view", "click", "scroll", "page_view", "click", "click",
                   "page_view", "click", "click", "click", "scroll"]
-        return self.visit(ip, events=events, duration=120.0, scroll_depth=80.0, **kwargs)
+        return self.visit(ip, events=events, duration=duration, scroll_depth=80.0, **kwargs)
 
     # -- direct data ------------------------------------------------------
     async def seed_history(self, ip: str, verdict: Verdict, count: int, *, hours_ago: float = 2.0) -> None:

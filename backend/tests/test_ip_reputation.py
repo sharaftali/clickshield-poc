@@ -1,4 +1,5 @@
-"""Task 006: reputation decays, needs history, follows feedback, and never feeds on itself."""
+"""Tasks 006 / 020: reputation decays, needs history, follows feedback, never feeds on itself,
+and feeds two rules: KNOWN_HIGH_RISK_IP (average past risk) and HIGH_FRAUD_HISTORY (fraud ratio)."""
 from __future__ import annotations
 
 import uuid
@@ -19,10 +20,11 @@ from app.services.ip_reputation import (
     counter_deltas,
     decay_weight,
 )
-from app.services.risk_scorer import RiskScorer
+from app.services.rules import FeatureContext, evaluate
+from app.services.rules.repository import catalog_configs
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
-FRAUD, SAFE, MONITOR = Verdict.FRAUD, Verdict.SAFE, Verdict.MONITOR
+FRAUD, SAFE, MONITOR, FLAG_V = Verdict.FRAUD, Verdict.SAFE, Verdict.MONITOR, Verdict.FLAG
 
 
 def history(*rows: tuple[float, Verdict, Verdict | None]):
@@ -43,9 +45,17 @@ def make_session(**overrides) -> Session:
     return Session(**fields)
 
 
+def rule_hits(evidence: ReputationEvidence, code: str) -> list:
+    results = evaluate(FeatureContext(session=make_session(), reputation=evidence), catalog_configs())
+    return [result for result in results if result.code == code]
+
+
 def reputation_reasons(evidence: ReputationEvidence) -> list:
-    rules, _, _ = RiskScorer.score_session(make_session(), evidence)
-    return [rule for rule in rules if rule.reason_code == "HIGH_RISK_IP_REPUTATION"]
+    return rule_hits(evidence, "KNOWN_HIGH_RISK_IP")
+
+
+def history_reasons(evidence: ReputationEvidence) -> list:
+    return rule_hits(evidence, "HIGH_FRAUD_HISTORY")
 
 
 def test_decay_weight_halves_every_half_life():
@@ -94,7 +104,7 @@ def test_client_feedback_overrides_system_verdict():
 
 def test_monitor_sessions_are_not_evidence():
     evidence = compute_reputation(history(*[(0, MONITOR, None)] * 10), now=NOW)
-    assert evidence.sessions == 0 and evidence.score == 0
+    assert evidence.sessions == 0 and evidence.score == 0 and evidence.fraud_ratio == 0
 
 
 def test_contribution_scales_with_confidence():
@@ -111,6 +121,8 @@ def test_history_query_excludes_current_session_and_is_org_scoped():
     assert "sessions.organization_id = " in sql and session.organization_id in params
     assert "sessions.ip_address = " in sql
     assert NOW - timedelta(days=30) in params
+    # The current burst (last hour) is velocity's job, not history.
+    assert "sessions.created_at < " in sql and NOW - timedelta(hours=1) in params
 
 
 @pytest.mark.parametrize(
@@ -125,6 +137,50 @@ def test_history_query_excludes_current_session_and_is_org_scoped():
 )
 def test_counter_deltas(is_new, previous, current, expected):
     assert counter_deltas(is_new_session=is_new, previous_verdict=previous, current_verdict=current) == expected
+
+
+def test_score_is_decayed_average_risk_of_past_sessions():
+    rows = [(NOW - timedelta(days=1), MONITOR, None, 70), (NOW - timedelta(days=1), MONITOR, None, 50),
+            (NOW - timedelta(days=1), FLAG_V, None, 66)]
+    evidence = compute_reputation(rows, now=NOW)
+    assert evidence.score == 62           # MONITOR / FLAG risk counts for KNOWN_HIGH_RISK_IP …
+    assert evidence.sessions == 0         # … but they are not fraud / legit labels
+    assert history_reasons(evidence) == []
+
+
+# ---- HIGH_FRAUD_HISTORY (task 020) ----
+
+def test_fraud_history_fires_on_mostly_fraud_ip():
+    # 8 fraud and 2 legitimate sessions within 7 days.
+    evidence = compute_reputation(
+        history(*[(0.5 * i, FRAUD, None) for i in range(8)], (1, SAFE, None), (2, SAFE, None)), now=NOW
+    )
+    assert evidence.fraud_ratio >= 0.6
+    [hit] = history_reasons(evidence)
+    assert 0 < hit.score <= 35 and hit.category == "REPUTATION"
+
+
+def test_fraud_history_ignores_mostly_legitimate_ip():
+    evidence = compute_reputation(
+        history(*[(0.5, FRAUD, None)] * 2, *[(0.1 * i, SAFE, None) for i in range(18)]), now=NOW
+    )
+    assert history_reasons(evidence) == []
+
+
+def test_fraud_history_needs_minimum_sample():
+    evidence = compute_reputation(history((0.1, FRAUD, None), (0.2, FRAUD, None)), now=NOW)
+    assert evidence.fraud_ratio == 1.0
+    assert history_reasons(evidence) == []
+
+
+def test_client_marking_sessions_legitimate_stops_fraud_history():
+    rows = [(0.2 * i, FRAUD, None) for i in range(6)] + [(0.3, SAFE, None)] * 2
+    assert history_reasons(compute_reputation(history(*rows), now=NOW))
+    # The client marks 5 of the fraud sessions legitimate.
+    relabelled = [(age, verdict, SAFE if i < 5 else label) for i, (age, verdict, label) in enumerate(rows)]
+    evidence = compute_reputation(history(*relabelled), now=NOW)
+    assert evidence.fraud_ratio < 0.6
+    assert history_reasons(evidence) == []
 
 
 def test_reputation_upsert_is_atomic_per_org_ip():
@@ -151,7 +207,7 @@ class HistoryDB:
         return SimpleNamespace()
 
 
-async def test_rescoring_the_same_session_does_not_raise_its_own_risk():
+async def test_rescoring_the_same_session_does_not_raise_its_own_risk(monkeypatch):
     # Before task 006: a session at ~72 pushed reputation to 72, and its next batch
     # read that back as +30. Now history excludes the session being scored.
     db = HistoryDB(history((1, FRAUD, None), *[(0.5 * i, SAFE, None) for i in range(6)]))
@@ -160,6 +216,9 @@ async def test_rescoring_the_same_session_does_not_raise_its_own_risk():
         clicks_10_seconds=8, clicks_30_seconds=8, clicks_60_seconds=8, clicks_5_minutes=8,
         clicks_1_hour=8, clicks_24_hours=8,
     )
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RULES_SOURCE", "code")
     engine = FraudEngine()
     scores = []
     for i in range(10):

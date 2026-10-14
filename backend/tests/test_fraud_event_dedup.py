@@ -13,11 +13,11 @@ from app.services.fraud_engine import (
     build_rule_results_upsert,
     build_untrigger_stale_rules,
 )
-from app.services.risk_scorer import RiskRule
+from app.services.rules import RuleResult
 
 RULES = [
-    RiskRule("CLICK_VELOCITY_RULE", "ABNORMAL_CLICK_VELOCITY", 25, 70, "velocity"),
-    RiskRule("SESSION_BEHAVIOR_RULE", "ABNORMAL_SESSION_BEHAVIOR", 18, 60, "short"),
+    RuleResult("ABNORMAL_CLICK_VELOCITY", "Abnormal click velocity", "VELOCITY", 25, 70, "velocity", 1, {"weight": 25}),
+    RuleResult("UNUSUAL_SESSION", "Unusual session", "BEHAVIOR", 18, 60, "short", 1, {"weight": 18}),
 ]
 
 
@@ -39,7 +39,8 @@ def bot_session() -> Session:
 def test_upsert_targets_session_rule_constraint_and_retriggers():
     sql = pg(build_rule_results_upsert(bot_session(), RULES))
     assert "ON CONFLICT ON CONSTRAINT uq_fraud_events_session_rule DO UPDATE" in sql
-    for column in ("score_contribution", "rule_confidence", "reason_text", "triggered", "updated_at"):
+    for column in ("score_contribution", "rule_confidence", "reason_text", "triggered", "updated_at",
+                   "category", "rule_version", "rule_config"):
         assert f"{column} = " in sql.split("DO UPDATE", 1)[1]
 
 
@@ -67,7 +68,10 @@ class RecordingDB:
         self.added.append(obj)
 
 
-async def test_rescoring_never_adds_fraud_event_rows_through_the_orm():
+async def test_rescoring_never_adds_fraud_event_rows_through_the_orm(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RULES_SOURCE", "code")
     db = RecordingDB()
     session = bot_session()
     engine = FraudEngine()
@@ -86,4 +90,4 @@ async def test_rescoring_never_adds_fraud_event_rows_through_the_orm():
         rows = sum(1 for name in params if name.startswith("rule_name_m"))
         keys |= {(params[f"session_id_m{i}"], params[f"rule_name_m{i}"]) for i in range(rows)}
     assert {session_id for session_id, _ in keys} == {session.id}
-    assert {"CLICK_VELOCITY_RULE", "SESSION_BEHAVIOR_RULE"} <= {rule for _, rule in keys}
+    assert {"ABNORMAL_CLICK_VELOCITY", "UNUSUAL_SESSION"} <= {rule for _, rule in keys}

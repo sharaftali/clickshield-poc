@@ -245,7 +245,8 @@ async def list_google_campaigns(
             "campaign.id, "
             "campaign.name, "
             "campaign.status, "
-            "campaign.advertising_channel_type "
+            "campaign.advertising_channel_type, "
+            "campaign.geo_target_type_setting.positive_geo_target_type "
             "FROM campaign "
             "ORDER BY campaign.name"
         )
@@ -285,6 +286,7 @@ async def list_google_campaigns(
                     "campaign_type": campaign_type.value,
                     "status": _normalize_campaign_status(campaign.get("status")).value,
                     "supports_ip_exclusion": campaign_type not in {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO},
+                    "geo_target_type": (campaign.get("geoTargetTypeSetting") or {}).get("positiveGeoTargetType"),
                 }
             )
     return campaigns
@@ -338,3 +340,124 @@ async def count_ip_exclusions_by_campaign(
             if campaign_id:
                 counts[campaign_id] = counts.get(campaign_id, 0) + 1
     return counts
+
+
+def _ads_headers(access_token: str, login_customer_id: str | None) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    if settings.GOOGLE_DEVELOPER_TOKEN:
+        headers["developer-token"] = settings.GOOGLE_DEVELOPER_TOKEN
+    if login_customer_id:
+        headers["login-customer-id"] = login_customer_id
+    return headers
+
+
+async def _search_stream(access_token: str, customer_id: str, login_customer_id: str | None, query: str) -> list[dict]:
+    url = (
+        f"https://googleads.googleapis.com/{_google_ads_api_version()}/customers/"
+        f"{customer_id}/googleAds:searchStream"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, headers=_ads_headers(access_token, login_customer_id), json={"query": query})
+    except httpx.HTTPError as exc:
+        raise ValueError("Google Ads query failed due to a network error.") from exc
+    if resp.status_code != 200:
+        logger.warning("Google Ads query failed: %s %s", resp.status_code, resp.text)
+        raise ValueError(f"Google Ads query failed: {resp.text}")
+    body = resp.json()
+    return [row for batch in (body if isinstance(body, list) else []) for row in batch.get("results", [])]
+
+
+# geo_target_constant rows rarely change: resolve each once per process.
+_geo_constant_cache: dict[str, dict[str, str | None]] = {}
+
+
+def _geo_region(constant: dict) -> str | None:
+    """State-level name for a geo target (canonical name "Dallas,Texas,United States" → Texas)."""
+    target_type = (constant.get("targetType") or "").casefold()
+    if target_type == "country":
+        return None
+    if target_type in {"state", "province", "region", "territory", "prefecture", "governorate", "autonomous community"}:
+        return constant.get("name")
+    parts = [part.strip() for part in (constant.get("canonicalName") or "").split(",") if part.strip()]
+    return parts[-2] if len(parts) >= 3 else None
+
+
+async def resolve_geo_target_constants(
+    resource_names: list[str], *, access_token: str, customer_id: str, login_customer_id: str | None = None
+) -> dict[str, dict[str, str | None]]:
+    missing = sorted({name for name in resource_names if name and name not in _geo_constant_cache})
+    for start in range(0, len(missing), 500):
+        chunk = missing[start:start + 500]
+        quoted = ", ".join(f"'{name}'" for name in chunk if name.startswith("geoTargetConstants/") and name.split("/", 1)[1].isdigit())
+        if not quoted:
+            continue
+        rows = await _search_stream(
+            access_token, customer_id, login_customer_id,
+            "SELECT geo_target_constant.resource_name, geo_target_constant.name, "
+            "geo_target_constant.country_code, geo_target_constant.target_type, "
+            "geo_target_constant.canonical_name "
+            f"FROM geo_target_constant WHERE geo_target_constant.resource_name IN ({quoted})",
+        )
+        for row in rows:
+            constant = row.get("geoTargetConstant") or {}
+            _geo_constant_cache[constant.get("resourceName")] = {
+                "name": constant.get("name"),
+                "country_code": (constant.get("countryCode") or "").upper() or None,
+                "target_type": constant.get("targetType"),
+                "region": _geo_region(constant),
+            }
+    return {name: _geo_constant_cache[name] for name in resource_names if name in _geo_constant_cache}
+
+
+async def list_campaign_locations(
+    *, access_token: str, customer_id: str, login_customer_id: str | None = None
+) -> dict[str, list[dict]]:
+    """Location targets per campaign id (spec §18, task 018): positive and negative
+    LOCATION criteria resolved to country / region, plus PROXIMITY targets by their
+    address's country. Raises ValueError if Google can't be read."""
+    rows = await _search_stream(
+        access_token, customer_id, login_customer_id,
+        "SELECT campaign.id, campaign_criterion.criterion_id, campaign_criterion.type, "
+        "campaign_criterion.negative, campaign_criterion.location.geo_target_constant, "
+        "campaign_criterion.proximity.address.country_code, campaign_criterion.proximity.address.city_name "
+        "FROM campaign_criterion "
+        "WHERE campaign_criterion.type IN ('LOCATION', 'PROXIMITY') AND campaign_criterion.status != 'REMOVED'",
+    )
+    constants = await resolve_geo_target_constants(
+        [((row.get("campaignCriterion") or {}).get("location") or {}).get("geoTargetConstant") for row in rows],
+        access_token=access_token, customer_id=customer_id, login_customer_id=login_customer_id,
+    )
+    by_campaign: dict[str, list[dict]] = {}
+    for row in rows:
+        campaign_id = str((row.get("campaign") or {}).get("id", "")).strip()
+        criterion = row.get("campaignCriterion") or {}
+        if not campaign_id:
+            continue
+        criterion_type = criterion.get("type") or "LOCATION"
+        if criterion_type == "PROXIMITY":
+            address = (criterion.get("proximity") or {}).get("address") or {}
+            location = {
+                "geo_target_constant": None,
+                "country_code": (address.get("countryCode") or "").upper() or None,
+                "region": None,
+                "name": address.get("cityName") or "Radius target",
+                "target_type": "Proximity",
+            }
+        else:
+            constant_name = (criterion.get("location") or {}).get("geoTargetConstant")
+            resolved = constants.get(constant_name, {})
+            location = {
+                "geo_target_constant": constant_name,
+                "country_code": resolved.get("country_code"),
+                "region": resolved.get("region"),
+                "name": resolved.get("name"),
+                "target_type": resolved.get("target_type"),
+            }
+        by_campaign.setdefault(campaign_id, []).append({
+            "criterion_id": str(criterion.get("criterionId") or ""),
+            "criterion_type": criterion_type,
+            "negative": bool(criterion.get("negative")),
+            **location,
+        })
+    return by_campaign

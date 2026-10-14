@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import decode_token, get_user_from_token
+from app.models.enums import UserRole
 from app.models.organization import User
 
 security = HTTPBearer(auto_error=False)
@@ -37,3 +38,16 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def require_admin(current_user: CurrentUser) -> User:
+    """Owners and admins only: protection mode, rule tuning (task 030 will widen RBAC)."""
+    if current_user.role not in (UserRole.OWNER, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only organization owners and admins can change this setting.",
+        )
+    return current_user
+
+
+AdminUser = Annotated[User, Depends(require_admin)]

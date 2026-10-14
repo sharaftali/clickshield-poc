@@ -60,12 +60,9 @@ class EnqueueResult:
 
 
 def is_actionable_fraud(session: Session) -> bool:
-    return (
-        session.verdict == Verdict.FRAUD
-        and int(session.risk_score or 0) >= settings.FRAUD_RISK_FRAUD_THRESHOLD
-        and int(session.confidence_score or 0) >= settings.FRAUD_CONFIDENCE_MIN_FOR_BLOCK
-        and bool(session.ip_address)
-    )
+    """Only FRAUD (= BLOCK) is excluded automatically; FLAG waits for human review (task 017).
+    The organization's thresholds were already applied when the verdict was decided (task 016)."""
+    return session.verdict == Verdict.FRAUD and bool(session.ip_address)
 
 
 def _valid_customer_id(value: str | None) -> str | None:

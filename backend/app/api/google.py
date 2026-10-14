@@ -8,8 +8,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.crypto import decrypt, encrypt
@@ -23,10 +24,12 @@ from app.models import (
     Exclusion,
     ExclusionStatus,
     GoogleCampaign,
+    GoogleCampaignLocation,
     GoogleConnection,
     Organization,
 )
 from app.schemas.google import (
+    CampaignLocationOut,
     CampaignOut,
     CampaignSyncSummary,
     GoogleAccountOut,
@@ -45,6 +48,7 @@ from app.services.google_oauth import (
     fetch_user_email,
     generate_state_token,
     list_accessible_customer_accounts,
+    list_campaign_locations,
     list_google_campaigns,
     refresh_access_token,
 )
@@ -111,7 +115,7 @@ def _campaign_supports_ip_exclusion(campaign_type: CampaignType) -> bool:
     return campaign_type not in {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO}
 
 
-def _to_campaign_out(campaign: GoogleCampaign) -> CampaignOut:
+def _to_campaign_out(campaign: GoogleCampaign, locations: list[GoogleCampaignLocation] | None = None) -> CampaignOut:
     limit = campaign_limit()
     used = int(campaign.exclusion_count or 0) + int(campaign.external_exclusion_count or 0)
     return CampaignOut(
@@ -126,6 +130,8 @@ def _to_campaign_out(campaign: GoogleCampaign) -> CampaignOut:
         exclusion_used=used,
         exclusion_limit=limit,
         supports_ip_exclusion=_campaign_supports_ip_exclusion(campaign.campaign_type),
+        geo_target_type=campaign.geo_target_type,
+        locations=[CampaignLocationOut.model_validate(location) for location in locations or []],
     )
 
 
@@ -472,6 +478,7 @@ async def sync_campaigns(
                 campaign_type=CampaignType(str(remote_campaign["campaign_type"])),
                 status=CampaignStatus(str(remote_campaign["status"])),
                 protection_enabled=bool(remote_campaign["supports_ip_exclusion"]),
+                geo_target_type=remote_campaign.get("geo_target_type"),
             )
             db.add(campaign)
             existing_campaigns[campaign_id] = campaign
@@ -481,6 +488,7 @@ async def sync_campaigns(
         campaign.name = str(remote_campaign["name"])
         campaign.campaign_type = CampaignType(str(remote_campaign["campaign_type"]))
         campaign.status = CampaignStatus(str(remote_campaign["status"]))
+        campaign.geo_target_type = remote_campaign.get("geo_target_type")
         if not _campaign_supports_ip_exclusion(campaign.campaign_type):
             campaign.protection_enabled = False
         updated += 1
@@ -497,10 +505,16 @@ async def sync_campaigns(
         db, connection, access_token, list(existing_campaigns.values())
     )
 
+    # Location targeting feeds the GEO_ANOMALY rule (task 018).
+    locations_synced = await _sync_campaign_locations(
+        db, connection, access_token, list(existing_campaigns.values())
+    )
+
     audit_sync(
         AuditResult.SUCCESS,
         details={"synced": len(remote_campaigns), "created": created, "updated": updated,
-                 "removed": removed, "external_exclusions_counted": external_counted},
+                 "removed": removed, "external_exclusions_counted": external_counted,
+                 "locations_synced": locations_synced},
     )
     await db.commit()
     return CampaignSyncSummary(
@@ -509,6 +523,33 @@ async def sync_campaigns(
         updated=updated,
         removed=removed,
     )
+
+
+async def _sync_campaign_locations(
+    db: AsyncSession,
+    connection: GoogleConnection,
+    access_token: str,
+    campaigns: list[GoogleCampaign],
+) -> bool:
+    """Replace each campaign's stored location targets. False (previous targets kept) if Google can't be read."""
+    try:
+        remote = await list_campaign_locations(
+            access_token=access_token,
+            customer_id=connection.customer_id,
+            login_customer_id=connection.login_customer_id,
+        )
+    except ValueError as exc:
+        logger.warning("Keeping previous campaign location targets: %s", exc)
+        return False
+
+    await db.flush()
+    ids = [campaign.id for campaign in campaigns]
+    if ids:
+        await db.execute(delete(GoogleCampaignLocation).where(GoogleCampaignLocation.campaign_id.in_(ids)))
+    for campaign in campaigns:
+        for location in remote.get(campaign.campaign_id, []):
+            db.add(GoogleCampaignLocation(campaign_id=campaign.id, **location))
+    return True
 
 
 async def _refresh_external_exclusion_counts(
@@ -560,6 +601,7 @@ async def list_campaigns(
 
     result = await db.execute(
         select(GoogleCampaign)
+        .options(selectinload(GoogleCampaign.locations))
         .where(GoogleCampaign.connection_id == connection.id)
         .order_by(
             GoogleCampaign.protection_enabled.desc(),
@@ -567,7 +609,7 @@ async def list_campaigns(
             GoogleCampaign.name.asc(),
         )
     )
-    return [_to_campaign_out(campaign) for campaign in result.scalars().all()]
+    return [_to_campaign_out(campaign, campaign.locations) for campaign in result.scalars().all()]
 
 
 @router.patch("/campaigns/{campaign_row_id}/protection", response_model=CampaignOut)
@@ -580,6 +622,7 @@ async def update_campaign_protection(
 ) -> CampaignOut:
     result = await db.execute(
         select(GoogleCampaign)
+        .options(selectinload(GoogleCampaign.locations))
         .join(GoogleConnection, GoogleConnection.id == GoogleCampaign.connection_id)
         .where(
             GoogleCampaign.id == campaign_row_id,
@@ -614,9 +657,10 @@ async def update_campaign_protection(
         details={"campaign_id": campaign.campaign_id, "campaign_name": campaign.name,
                  "protection_enabled": payload.protection_enabled, "previous": previous},
     )
+    locations = list(campaign.locations)
     await db.commit()
     await db.refresh(campaign)
-    return _to_campaign_out(campaign)
+    return _to_campaign_out(campaign, locations)
 
 
 @router.get("/health")

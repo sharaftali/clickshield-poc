@@ -10,7 +10,8 @@ from sqlalchemy.dialects import postgresql
 
 from app.models import Session, Verdict
 from app.schemas.tracking import TrackingBatchIn
-from app.services.risk_scorer import RiskScorer
+from app.services.rules import FeatureContext, evaluate
+from app.services.rules.repository import catalog_configs
 from app.services.tracking_service import (
     VELOCITY_WINDOWS,
     TrackingService,
@@ -138,9 +139,8 @@ async def test_apply_velocity_stores_max_of_ip_and_visitor():
     assert session.extra_signals["source_platform"] == "google_ads"
 
 
-def reasons(session: Session) -> set[str]:
-    rules, _, _ = RiskScorer.score_session(session, None)
-    return {rule.reason_code for rule in rules}
+def reasons(session: Session, rules=None) -> set[str]:
+    return {result.code for result in evaluate(FeatureContext(session=session), rules or catalog_configs())}
 
 
 def test_human_with_many_page_clicks_has_no_velocity_rule():
@@ -162,10 +162,13 @@ def test_repeated_ad_landings_trigger_velocity_rules():
     assert {"ABNORMAL_CLICK_VELOCITY", "BURST_CLICK_PATTERN"} <= reasons(session)
 
 
-def test_velocity_threshold_comes_from_settings(monkeypatch):
-    from app.core.config import settings
+def test_velocity_threshold_comes_from_rule_configuration():
+    from dataclasses import replace
 
     session = make_session(clicks_60_seconds=5, session_duration_seconds=60.0, page_count=3)
     assert "ABNORMAL_CLICK_VELOCITY" not in reasons(session)
-    monkeypatch.setattr(settings, "VELOCITY_CLICKS_60S_THRESHOLD", 5)
-    assert "ABNORMAL_CLICK_VELOCITY" in reasons(session)
+    rules = [
+        replace(rule, params={**rule.params, "clicks_60_seconds_gte": 5}) if rule.code == "ABNORMAL_CLICK_VELOCITY" else rule
+        for rule in catalog_configs()
+    ]
+    assert "ABNORMAL_CLICK_VELOCITY" in reasons(session, rules)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -120,23 +121,81 @@ class Settings(BaseSettings):
         description="Public dashboard frontend URL used for OAuth return redirects",
     )
 
-    # ---- Fraud Engine Defaults (spec §24, §28) ----
-    FRAUD_RISK_FRAUD_THRESHOLD: int = 80
-    FRAUD_RISK_MONITOR_THRESHOLD: int = 50
-    FRAUD_CONFIDENCE_MIN_FOR_BLOCK: int = 80
+    # ---- Rules (spec §21–22, task 015) ----
+    # Rule weights, confidences and thresholds live in the `rules` table (seeded with
+    # app/services/rules/catalog.py) plus per-organization `rule_overrides`.
+    # "code" ignores the database and uses the catalog defaults (rollback switch).
+    RULES_SOURCE: Literal["db", "code"] = "db"
+    RULES_CACHE_TTL_SECONDS: int = 60
 
-    # ---- Click velocity rules (spec §16, §22) — paid ad landings per IP/visitor ----
-    VELOCITY_CLICKS_60S_THRESHOLD: int = 8
-    BURST_CLICKS_30S_THRESHOLD: int = 4
-    BURST_MAX_SESSION_SECONDS: float = 10.0
+    # ---- Risk aggregation (spec §24, §27, task 014) ----
+    # 2 = categories with diminishing returns + signal diversity; 1 = the original
+    # sum / average-confidence scoring and 80/80 decision (rollback switch).
+    SCORING_VERSION: Literal[1, 2] = 2
+    # Within one category the strongest rule counts fully, the next ones less.
+    SCORING_DIMINISHING_FACTORS: list[float] = [1.0, 0.5, 0.25]
+    SCORING_CATEGORY_CAPS: dict[str, int] = {
+        "NETWORK": 25, "REPUTATION": 45, "VELOCITY": 40, "BEHAVIOR": 30,
+        "AUTOMATION": 40, "GEO": 20, "ANOMALY": 15,
+    }
+    # A category counts towards signal diversity from this contribution up.
+    SCORING_MIN_CATEGORY_CONTRIBUTION: int = 8
+    # Data completeness (confidence of SAFE verdicts): observation needed for "complete".
+    SCORING_FULL_OBSERVATION_SECONDS: float = 30.0
+    SCORING_FULL_EVENT_COUNT: int = 5
+
+    # ---- Risk bands and decision matrix (spec §24, §26, §28, task 017) ----
+    RISK_BAND_MODERATE: int = 30
+    RISK_BAND_HIGH: int = 60
+    RISK_BAND_VERY_HIGH: int = 80
+    CONFIDENCE_MEDIUM: int = 60   # very high risk below the FRAUD confidence: FLAG from here, else MONITOR
+    CONFIDENCE_HIGH: int = 75     # high-band risk needs this confidence to be FLAGged
+    FLAG_MIN_DIVERSITY: int = 2   # FLAG (human review) needs at least two independent categories
+
+    # ---- Protection modes (spec §54, task 016) — engineering defaults, tune with real data ----
+    PROTECTION_MODE_POLICIES: dict[str, dict[str, int | bool]] = {
+        "conservative": {"flag_risk": 70, "fraud_risk": 90, "fraud_confidence": 90, "min_diversity": 3, "auto_exclude": True},
+        "balanced": {"flag_risk": 60, "fraud_risk": 80, "fraud_confidence": 80, "min_diversity": 3, "auto_exclude": True},
+        "aggressive": {"flag_risk": 50, "fraud_risk": 70, "fraud_confidence": 70, "min_diversity": 2, "auto_exclude": True},
+    }
+    # Safety floors for Custom mode (spec §73: one suspicious signal never blocks).
+    CUSTOM_MIN_DIVERSITY_FLOOR: int = 2
+    CUSTOM_MIN_FRAUD_RISK: int = 50
+    CUSTOM_MIN_FRAUD_CONFIDENCE: int = 50
+
+    # ---- Click velocity (spec §16) — paid ad landings per IP/visitor ----
+    # Rule thresholds are in the rules table; these only shape the counting.
+    SHARED_IP_MIN_DISTINCT_VISITORS: int = 5  # an IP with this many visitors (24h) is treated as shared
+
+    # ---- Repeat visitors (spec §17, task 019) ----
+    REPEAT_SHORT_WINDOW_HOURS: int = 24
+    REPEAT_LONG_WINDOW_HOURS: int = 168
+    DEVICE_KEY_WINDOW_MINUTES: int = 60       # rotating-proxy check: same device key, many IPs
+    # Salt for the per-organization device key hash; empty = derived from SECRET_KEY.
+    DEVICE_KEY_SALT: str = ""
+
+    # ---- Click / interaction timing (spec §16, §20, task 021) ----
+    AD_CLICK_INTERVAL_LOOKBACK_HOURS: int = 24
+    INTERVAL_MIN_SAMPLES: int = 3             # fewer intervals → no statistics, rules skipped
 
     # ---- IP reputation (spec §14) — per organization, decayed, never self-referencing ----
     REPUTATION_WINDOW_DAYS: int = 30          # history considered
     REPUTATION_HALF_LIFE_DAYS: float = 7.0    # a session 7 days old counts half
-    REPUTATION_MIN_SAMPLE: int = 3            # labelled past sessions before reputation counts
+    REPUTATION_MIN_SAMPLE: int = 3            # past sessions before the risk reputation counts
     REPUTATION_FULL_CONFIDENCE_WEIGHT: float = 10.0  # decayed sessions for 100% confidence
-    REPUTATION_RULE_MIN_SCORE: int = 60       # decayed fraud ratio (0–100) to trigger the rule
-    REPUTATION_RULE_MAX_WEIGHT: int = 30      # contribution at score 100 and full confidence
+    # History is evidence from the past: sessions younger than this belong to the current
+    # burst, which velocity / repeat rules already score (no double counting).
+    REPUTATION_MIN_AGE_SECONDS: int = 3600
+
+    # ---- Statistical anomaly detection (spec §31, §76, task 022) ----
+    ANOMALY_DETECTION_ENABLED: bool = True
+    ANOMALY_BASELINE_DAYS: int = 14
+    ANOMALY_MIN_HISTORY_DAYS: int = 7         # less history → campaign not scored (cold start)
+    ANOMALY_MIN_SAME_HOUR_SAMPLES: int = 7    # same hour-of-day baseline needs this many days
+    ANOMALY_Z_MEDIUM: float = 3.0
+    ANOMALY_Z_HIGH: float = 4.0
+    ANOMALY_MIN_LANDINGS: int = 10            # an hour needs this many landings to be a spike
+    ANOMALY_SESSION_RULE_HOURS: int = 1       # sessions this long after a HIGH spike get TRAFFIC_ANOMALY
 
     # ---- Google Ads Exclusion Limits (spec §39, §73: configurable, never hard-coded) ----
     GOOGLE_MAX_IP_EXCLUSIONS_PER_CAMPAIGN: int = 500

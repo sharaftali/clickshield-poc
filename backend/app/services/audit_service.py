@@ -43,6 +43,11 @@ class AuditAction(StrEnum):
     USER_LOGIN_FAILED = "USER_LOGIN_FAILED"
     # Feedback
     SESSION_FEEDBACK = "SESSION_FEEDBACK"
+    # Fraud engine configuration (tasks 015, 016)
+    RULE_CHANGED = "RULE_CHANGED"
+    PROTECTION_MODE_CHANGED = "PROTECTION_MODE_CHANGED"
+    # Detection (task 022; real alert delivery is task 028)
+    TRAFFIC_ANOMALY_DETECTED = "TRAFFIC_ANOMALY_DETECTED"
 
 
 # Any details key containing one of these is replaced, at any nesting depth.

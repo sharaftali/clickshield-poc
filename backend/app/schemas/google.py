@@ -55,6 +55,17 @@ class SelectCustomerIn(BaseModel):
         return cleaned
 
 
+class CampaignLocationOut(BaseModel):
+    """A campaign location target (task 018)."""
+    country_code: str | None = None
+    region: str | None = None
+    name: str | None = None
+    target_type: str | None = None
+    negative: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CampaignOut(BaseModel):
     id: uuid.UUID
     campaign_id: str
@@ -67,6 +78,8 @@ class CampaignOut(BaseModel):
     exclusion_used: int = 0              # both together
     exclusion_limit: int = 0             # usable slots (Google limit − reserved)
     supports_ip_exclusion: bool = True
+    geo_target_type: str | None = None   # PRESENCE | PRESENCE_OR_INTEREST
+    locations: list[CampaignLocationOut] = []
 
     model_config = ConfigDict(from_attributes=True)
 

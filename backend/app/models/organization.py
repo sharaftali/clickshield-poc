@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import Boolean, Enum, ForeignKey, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -26,6 +26,9 @@ class Organization(Base, TimestampMixin):
         default=ProtectionMode.BALANCED,
         nullable=False,
     )
+    # Custom mode thresholds (task 016): flag_risk, fraud_risk, fraud_confidence,
+    # min_diversity, auto_exclude. Ignored by the other modes.
+    protection_settings: Mapped[dict | None] = mapped_column(JSONB)
 
     # Relationships
     users = relationship("User", back_populates="organization")

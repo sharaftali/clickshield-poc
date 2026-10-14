@@ -19,7 +19,11 @@ async def test_multiple_signals_are_high_confidence_fraud_and_get_excluded(world
 
     assert final["verdict"] == Verdict.FRAUD.value
     assert final["risk_score"] >= 80
-    assert final["confidence_score"] >= 80
+    # Spec §27: many independent kinds of evidence → high-confidence fraud (task 014).
+    assert final["confidence_score"] >= 90
+    last = (await world.sessions(ip))[-1]
+    assert last.signal_diversity >= 3 and last.risk_band == "VERY_HIGH"
+    assert {"NETWORK", "VELOCITY", "REPUTATION", "BEHAVIOR"} <= set(last.risk_categories)
 
     # Automatic protection (task 010): exactly one exclusion + one queued ADD action, job pushed.
     [exclusion] = await world.exclusions(ip)
