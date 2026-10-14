@@ -65,3 +65,15 @@ async def test_google_failure_is_retried_with_backoff_then_failed_and_logged(wor
     assert failed.result.value == "FAILED" and failed.google_request_id == "req-503"
     assert any(r.levelno == logging.ERROR and "failed permanently" in r.getMessage() for r in caplog.records)
     assert len(world.google_calls) == 5
+
+    # §75 Test 7 / §43: retry + log + ALERT (task 028), with an email queued to the owner.
+    async with world.sessionmaker() as db:
+        from sqlalchemy import select
+
+        from app.models import Alert, Notification
+
+        [alert] = (await db.execute(select(Alert))).scalars().all()
+        notes = (await db.execute(select(Notification))).scalars().all()
+    assert alert.type == "GOOGLE_API_FAILURE" and alert.severity == "critical" and alert.status == "open"
+    assert alert.organization_id == world.organization.id
+    assert [n.recipient for n in notes] == [world.user.email]

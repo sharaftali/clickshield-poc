@@ -50,6 +50,25 @@ class ProtectionSettingsIn(BaseModel):
 class OrganizationUpdateRequest(BaseModel):
     protection_mode: ProtectionMode | None = None
     protection_settings: ProtectionSettingsIn | None = None
+    # Reporting timezone (task 025), IANA name, e.g. America/Chicago
+    timezone: str | None = Field(default=None, max_length=64)
+    # Retention overrides in days (task 029); send null to go back to the platform default
+    raw_events_retention_days: int | None = Field(default=None, ge=1, le=3650)
+    sessions_retention_days: int | None = Field(default=None, ge=1, le=3650)
+    fraud_session_retention_days: int | None = Field(default=None, ge=1, le=3650)
+
+    @field_validator("timezone")
+    @classmethod
+    def check_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"Unknown timezone {value!r}") from exc
+        return value
 
     @model_validator(mode="after")
     def check_custom(self) -> "OrganizationUpdateRequest":
@@ -70,6 +89,10 @@ class OrganizationResponse(BaseModel):
     protection_mode: ProtectionMode
     is_active: bool
     protection_settings: dict[str, Any] | None = None
+    timezone: str = "UTC"
+    raw_events_retention_days: int | None = None
+    sessions_retention_days: int | None = None
+    fraud_session_retention_days: int | None = None
     # What the current mode resolves to, and every mode's defaults (for the settings page).
     policy: ProtectionPolicyOut | None = None
     mode_defaults: dict[str, ProtectionPolicyOut] = {}

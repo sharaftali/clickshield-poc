@@ -17,7 +17,13 @@ class TrackingEventIn(BaseModel):
     timestamp: datetime
     # Attribution
     gclid: str | None = Field(default=None, max_length=255)
+    gbraid: str | None = Field(default=None, max_length=255)
+    wbraid: str | None = Field(default=None, max_length=255)
     campaign_id: str | None = Field(default=None, max_length=50)
+    # ValueTrack parameters (task 024)
+    adgroup_id: str | None = Field(default=None, max_length=50)
+    keyword: str | None = Field(default=None, max_length=255)
+    matchtype: str | None = Field(default=None, max_length=20)
     utm_source: str | None = None
     utm_medium: str | None = None
     utm_campaign: str | None = None
@@ -36,7 +42,8 @@ class TrackingBatchIn(BaseModel):
 
 
 class TrackingResponse(BaseModel):
-    status: Literal["ok", "error"]
+    # "verified": the website's first event verified it (task 023); nothing was scored.
+    status: Literal["ok", "verified", "error"]
     session_id: uuid.UUID | None = None
     risk_score: int = 0
     confidence_score: int = 0

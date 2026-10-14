@@ -114,6 +114,12 @@ CATALOG: tuple[RuleDefinition, ...] = (
         {"patterns": ["bot", "crawler", "spider"]},
     ),
     RuleDefinition(
+        "AUTOMATION_SIGNAL", "Automation signal", Category.AUTOMATION, 25, 75,
+        "The browser reported automation indicators (webdriver, headless, no languages, tiny viewport), "
+        "or the client sent no Origin / was rate-limited.",
+        {"min_indicators": 1},
+    ),
+    RuleDefinition(
         "REPEATED_IDENTICAL_SESSIONS", "Repeated identical sessions", Category.AUTOMATION, 20, 65,
         "Several recent sessions from the same IP and device behaved identically (same landing "
         "page, pages and duration). Bounces are left to UNUSUAL_SESSION.",

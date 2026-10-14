@@ -54,8 +54,8 @@ export const authApi = {
 
 export const dashboardApi = {
   /** GET /api/v1/dashboard/overview */
-  overview: () =>
-    api.get<DashboardOverview>("/dashboard/overview").then((r) => r.data),
+  overview: (range: "today" | "7d" | "30d" = "today") =>
+    api.get<DashboardOverview>("/dashboard/overview", { params: { range } }).then((r) => r.data),
 
   /** GET /api/v1/dashboard/sessions?limit=N&verdict=FLAG (verdict FLAG = review queue) */
   sessions: (limit = 20, verdict?: Verdict) =>
@@ -151,6 +151,10 @@ export const googleApi = {
   /** GET /api/v1/google/connections — list OAuth connections for org */
   connections: () =>
     api.get<GoogleConnectionOut[]>("/google/connections").then((r) => r.data),
+
+  /** POST /api/v1/google/connect — start OAuth (task 033); navigate to the returned URL */
+  connect: () =>
+    api.post<{ authorization_url: string }>("/google/connect").then((r) => r.data),
 
   /** GET /api/v1/google/accounts — list accessible Google Ads customer accounts */
   accounts: () =>

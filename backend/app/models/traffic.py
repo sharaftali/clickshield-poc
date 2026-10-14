@@ -125,6 +125,12 @@ class Session(Base, TimestampMixin):
 
     # ---- Attribution (spec §10) ----
     gclid: Mapped[str | None] = mapped_column(String(255), index=True)
+    # iOS / web-to-app click identifiers and ValueTrack parameters (task 024, spec §10, §49)
+    gbraid: Mapped[str | None] = mapped_column(String(255))
+    wbraid: Mapped[str | None] = mapped_column(String(255))
+    ad_group_id: Mapped[str | None] = mapped_column(String(50))
+    keyword: Mapped[str | None] = mapped_column(String(255))
+    match_type: Mapped[str | None] = mapped_column(String(20))
     utm_source: Mapped[str | None] = mapped_column(String(100))
     utm_medium: Mapped[str | None] = mapped_column(String(100))
     utm_campaign: Mapped[str | None] = mapped_column(String(255))
@@ -273,6 +279,8 @@ class Event(Base, TimestampMixin):
     __tablename__ = "events"
     __table_args__ = (
         Index("ix_events_session_created", "session_id", "created_at"),
+        # Retention job (task 029): events older than the cutoff, per organization
+        Index("ix_events_org_created", "organization_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

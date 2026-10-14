@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../services/apiService";
@@ -129,7 +130,7 @@ export default function FraudEventsPage() {
                         )}
                       </td>
                       <td className="text-mono" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
-                        {e.session_id.slice(0, 8)}...
+                        <Link to={`/sessions/${e.session_id}`}>{e.session_id.slice(0, 8)}...</Link>
                       </td>
                       <td style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                         {fmtDate(e.created_at)}

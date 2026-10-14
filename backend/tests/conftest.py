@@ -50,6 +50,7 @@ from app.models import (
 from app.services import tracking_service as tracking_module
 from app.services.ip_intel import IPIntelService
 from app.services.rules import repository as rule_repository
+from app.core import redis as redis_module
 from app.workers import action_worker as worker_module
 from app.workers.action_worker import ActionWorker
 
@@ -100,6 +101,74 @@ def migrated_database() -> str:
     return TEST_DATABASE_URL
 
 
+class FakeRedis:
+    """The few Redis commands the app uses, in memory (TTLs are ignored except by ttl())."""
+
+    def __init__(self):
+        self.data: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
+        self.down = False
+
+    def _check(self):
+        if self.down:
+            raise ConnectionError("fake redis is down")
+
+    async def get(self, key):
+        self._check()
+        return self.data.get(key)
+
+    async def set(self, key, value, ex=None):
+        self._check()
+        self.data[key] = str(value)
+        if ex:
+            self.ttls[key] = ex
+        return True
+
+    async def getdel(self, key):
+        self._check()
+        return self.data.pop(key, None)
+
+    async def delete(self, *keys):
+        self._check()
+        return sum(1 for k in keys if self.data.pop(k, None) is not None)
+
+    async def incrby(self, key, amount):
+        self._check()
+        value = int(self.data.get(key, 0)) + amount
+        self.data[key] = str(value)
+        return value
+
+    async def incr(self, key):
+        return await self.incrby(key, 1)
+
+    async def expire(self, key, seconds):
+        self._check()
+        self.ttls[key] = seconds
+        return True
+
+    async def mget(self, keys):
+        self._check()
+        return [self.data.get(k) for k in keys]
+
+    async def ping(self):
+        self._check()
+        return True
+
+    async def zcard(self, key):
+        self._check()
+        return 0
+
+    async def aclose(self):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def fake_redis(monkeypatch):
+    fake = FakeRedis()
+    monkeypatch.setattr(redis_module, "_client", fake)
+    yield fake
+
+
 # Reference data seeded by migrations: kept between tests (tests that change it restore it).
 KEEP_TABLES = {"rules"}
 
@@ -142,6 +211,7 @@ class World:
     pushed_jobs: list = field(default_factory=list)
     google_results: list[GoogleAdsApiResult] = field(default_factory=list)
     google_calls: list = field(default_factory=list)
+    emails: list = field(default_factory=list)
     _counter: int = 0
 
     # -- tracking ---------------------------------------------------------
@@ -192,7 +262,8 @@ class World:
             })
         transport = httpx.ASGITransport(app=app, client=(ip, 51000))
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post("/api/v1/track", json={"events": batch}, headers={"user-agent": user_agent})
+            response = await client.post("/api/v1/track", json={"events": batch}, headers={
+                "user-agent": user_agent, "origin": f"https://{self.website.domain}"})
         assert response.status_code == 200, response.text
         return response.json()
 
@@ -310,6 +381,16 @@ async def world(sessionmaker, monkeypatch) -> World:
         return len(ids)
 
     monkeypatch.setattr(tracking_module, "enqueue_actions", record_push)
+    from app.api import admin as admin_module
+    monkeypatch.setattr(admin_module, "enqueue_actions", record_push)
+
+    # Emails (invitations): record instead of pushing to the worker.
+    async def record_job(name, *args, job_id=None):
+        w.emails.append(args)
+        return True
+
+    from app.api import users as users_module
+    monkeypatch.setattr(users_module, "enqueue_job", record_job)
 
     # Google: configured, not dry-run, adapter answers from w.google_results (default: success).
     monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "test-client")

@@ -1,21 +1,42 @@
+import type { ReactElement } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "../store/authStore";
+import { alertsApi } from "../services/p3Api";
 import { initials } from "../lib/utils";
 
-const NAV_ITEMS = [
-  { to: "/", label: "Overview", icon: GridIcon },
-  { to: "/sessions", label: "Sessions", icon: ListIcon },
-  { to: "/fraud-events", label: "Fraud Events", icon: AlertIcon },
-  { to: "/top-ips", label: "Top IPs", icon: IpIcon },
-  { to: "/protection", label: "Protection", icon: ShieldIcon },
-  { to: "/google", label: "Google Ads", icon: GoogleIcon },
-  { to: "/audit-log", label: "Audit Log", icon: AuditIcon },
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
+type NavItem = { to: string; label: string; icon: (p: { size: number }) => ReactElement };
+
+const SECTIONS: { label: string; items: NavItem[] }[] = [
+  { label: "Monitoring", items: [
+    { to: "/", label: "Overview", icon: GridIcon },
+    { to: "/analytics", label: "Analytics", icon: ChartIcon },
+    { to: "/campaigns", label: "Campaigns", icon: ListIcon },
+    { to: "/sessions", label: "Sessions", icon: ListIcon },
+    { to: "/fraud-events", label: "Fraud Events", icon: AlertIcon },
+    { to: "/top-ips", label: "Top IPs", icon: IpIcon },
+  ] },
+  { label: "Protection", items: [
+    { to: "/protection", label: "Protection", icon: ShieldIcon },
+    { to: "/google", label: "Google Ads", icon: GoogleIcon },
+    { to: "/websites", label: "Websites", icon: IpIcon },
+    { to: "/alerts", label: "Alerts", icon: BellIcon },
+  ] },
+  { label: "Organization", items: [
+    { to: "/team", label: "Team", icon: AuditIcon },
+    { to: "/audit-log", label: "Audit Log", icon: AuditIcon },
+    { to: "/settings", label: "Settings", icon: SettingsIcon },
+  ] },
 ];
 
 export default function Sidebar() {
   const { user, organization, clearAuth } = useAuthStore();
   const navigate = useNavigate();
+  // Alert bell (task 028): open alerts, refreshed every minute.
+  const { data: alerts } = useQuery({ queryKey: ["alerts-summary"], queryFn: alertsApi.summary, refetchInterval: 60000 });
+  const sections = user?.is_platform_admin
+    ? [...SECTIONS, { label: "Platform", items: [{ to: "/admin", label: "Admin", icon: ShieldIcon }] }]
+    : SECTIONS;
 
   const handleLogout = () => {
     clearAuth();
@@ -35,29 +56,30 @@ export default function Sidebar() {
       </div>
 
       <nav className="sidebar-nav">
-        <span className="nav-section-label">Monitoring</span>
-        {NAV_ITEMS.slice(0, 4).map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}
-          >
-            <Icon size={15} />
-            {label}
-          </NavLink>
-        ))}
-
-        <span className="nav-section-label" style={{ marginTop: 8 }}>Actions</span>
-        {NAV_ITEMS.slice(4).map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}
-          >
-            <Icon size={15} />
-            {label}
-          </NavLink>
+        {sections.map((section, index) => (
+          <div key={section.label}>
+            <span className="nav-section-label" style={index ? { marginTop: 8 } : undefined}>{section.label}</span>
+            {section.items.map(({ to, label, icon: Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === "/"}
+                className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}
+              >
+                <Icon size={15} />
+                {label}
+                {to === "/alerts" && !!alerts?.open && (
+                  <span
+                    className={alerts.critical ? "badge badge-fraud" : "badge badge-monitor"}
+                    style={{ marginLeft: "auto", fontSize: 10, padding: "0 6px" }}
+                    title={`${alerts.open} open alert(s)`}
+                  >
+                    {alerts.open}
+                  </span>
+                )}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
 
@@ -90,6 +112,12 @@ function Icon({ size, children }: { size: number; children: React.ReactNode }) {
   );
 }
 
+function ChartIcon({ size }: { size: number }) {
+  return <Icon size={size}><polyline points="1.5 12 5.5 7.5 9 10 14.5 3.5"/><line x1="1.5" y1="14.5" x2="14.5" y2="14.5"/></Icon>;
+}
+function BellIcon({ size }: { size: number }) {
+  return <Icon size={size}><path d="M4 11V7a4 4 0 018 0v4l1.5 1.5h-11z"/><path d="M6.5 14a1.5 1.5 0 003 0"/></Icon>;
+}
 function GridIcon({ size }: { size: number }) {
   return <Icon size={size}><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></Icon>;
 }

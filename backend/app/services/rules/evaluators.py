@@ -151,6 +151,11 @@ def _f(value: Any) -> float:
     return float(value or 0)
 
 
+def _human_actions(ctx: FeatureContext) -> int:
+    """Form / phone / conversion events: a person engaged, whatever the duration (task 024)."""
+    return int((ctx.session.extra_signals or {}).get("human_actions") or 0)
+
+
 # ---- VELOCITY ---------------------------------------------------------------
 
 @register
@@ -340,6 +345,8 @@ class UnusualSession(Evaluator):
 
     def evaluate(self, ctx, p):
         s = ctx.session
+        if _human_actions(ctx):
+            return None
         if _f(s.session_duration_seconds) < p.max_duration_seconds and int(s.page_count or 0) <= p.max_pages:
             return Hit()
         return None
@@ -356,6 +363,8 @@ class LowEngagementWithHighClicks(Evaluator):
 
     def evaluate(self, ctx, p):
         s = ctx.session
+        if _human_actions(ctx):
+            return None
         if (
             int(s.page_count or 0) <= p.max_pages
             and int(s.click_count or 0) >= p.min_clicks
@@ -379,6 +388,36 @@ class BotUserAgent(Evaluator):
         if user_agent and any(pattern.casefold() in user_agent for pattern in p.patterns if pattern):
             return Hit()
         return None
+
+
+AUTOMATION_INDICATORS = {
+    "webdriver": "navigator.webdriver is set",
+    "headless": "headless browser",
+    "no_languages": "no browser languages",
+    "tiny_viewport": "implausibly small viewport",
+}
+
+
+@register
+class AutomationSignal(Evaluator):
+    """Spec §19–20, task 024: aggregated, non-invasive indicators from the tracker
+    (no canvas / audio fingerprinting), plus clients that don't behave like browsers."""
+    code = "AUTOMATION_SIGNAL"
+
+    class Params(Params):
+        min_indicators: int = Field(ge=1)
+
+    def evaluate(self, ctx, p):
+        flags = ctx.signal("automation")
+        found = [label for key, label in AUTOMATION_INDICATORS.items() if flags.get(key) is True]
+        signals = ctx.session.extra_signals or {}
+        if signals.get("origin_missing"):
+            found.append("no Origin header (not a browser)")
+        if int(signals.get("rate_limited") or 0) > 0:
+            found.append("excessive request rate (rate-limited)")
+        if len(found) < p.min_indicators:
+            return None
+        return Hit(description="Automation indicators: " + ", ".join(found) + ".")
 
 
 @register

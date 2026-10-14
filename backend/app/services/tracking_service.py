@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    AuditResult,
     CampaignStatus,
     Event,
     EventType,
@@ -22,6 +23,11 @@ from app.models import (
 )
 from app.core.config import settings
 from app.core.queue import enqueue_actions
+from app.core.rate_limit import recent_rate_limited
+from app.core.redis import get_redis
+from app.services import alert_service, audit_service
+from app.services.audit_service import AuditAction
+from app.services.website_service import host_allowed, host_of
 from app.schemas.tracking import TrackingBatchIn, TrackingResponse
 from app.services.features import apply_event_interval_features, apply_landing_features, device_key
 from app.services.fraud_engine import FraudEngine
@@ -30,6 +36,21 @@ from app.services.protection_policy import get_policy
 from app.services.protection_service import enqueue_exclusion_for_session
 
 logger = logging.getLogger(__name__)
+
+# Real interactions a bot rarely fakes; they exempt a session from the bounce /
+# low-engagement rules (task 024).
+HUMAN_ACTION_EVENT_TYPES = frozenset(
+    t.value for t in (EventType.FORM_START, EventType.FORM_SUBMIT, EventType.PHONE_CLICK, EventType.CONVERSION)
+)
+LAST_EVENT_WRITE_INTERVAL = timedelta(seconds=60)
+
+
+class TrackingRejected(ValueError):
+    """A request the website doesn't allow (wrong origin, unverified)."""
+
+    def __init__(self, message: str, status_code: int = 403) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class TrackingService:
@@ -95,7 +116,7 @@ class TrackingService:
         return payload
 
     def _is_google_ads_traffic(self, first_event) -> bool:
-        if first_event.gclid:
+        if first_event.gclid or first_event.gbraid or first_event.wbraid:
             return True
         if first_event.campaign_id:
             return True
@@ -136,6 +157,11 @@ class TrackingService:
         first = payload.events[0]
 
         website = await self._get_website(first.site_token)
+        origin_host = self._origin_host(request, first)
+        await self._check_origin(website, origin_host)
+        if not website.is_verified:
+            return await self._verify_by_first_event(website, origin_host, request)
+        self._touch_website(website)
         # The organization's protection mode decides what a score means (task 016).
         policy = get_policy(await self.db.get(Organization, website.organization_id))
         logger.info(
@@ -176,6 +202,7 @@ class TrackingService:
             self.db.add(event)
 
         self._update_session_counters(session, payload)
+        await self._update_client_signals(session, origin_host, client_ip)
         await self._update_session_duration(session)
         await apply_event_interval_features(self.db, session)
 
@@ -229,14 +256,87 @@ class TrackingService:
 
     async def _get_website(self, site_token: str) -> Website:
         result = await self.db.execute(
-            select(Website).where(Website.tracking_token == site_token)
+            select(Website).where(Website.tracking_token == site_token, Website.is_active.is_(True))
         )
         website = result.scalar_one_or_none()
         if not website:
             raise ValueError("Invalid site token")
-        if not website.is_verified:
-            raise ValueError("Website not verified")
         return website
+
+    @staticmethod
+    def _origin_host(request: Request, first_event) -> str | None:
+        # Browsers send Origin on cross-origin fetch / sendBeacon; Referer is the fallback.
+        return host_of(request.headers.get("origin")) or host_of(request.headers.get("referer"))
+
+    async def _check_origin(self, website: Website, origin_host: str | None) -> None:
+        """Task 023: a token copied into another site's HTML must not work there."""
+        if origin_host is None or host_allowed(website, origin_host):
+            return
+        if not (settings.TRACKING_ENFORCE_ORIGIN and website.enforce_origin):
+            return
+        await self._count_origin_mismatch(website, origin_host)
+        raise TrackingRejected(f"Origin {origin_host} is not allowed for this website.")
+
+    async def _count_origin_mismatch(self, website: Website, origin_host: str) -> None:
+        now = datetime.now(timezone.utc)
+        key = f"origin_mismatch:{website.id}:{now:%Y%m%d%H}"
+        try:
+            redis = get_redis()
+            count = int(await redis.incr(key))
+            await redis.expire(key, 7200)
+        except Exception:
+            return
+        if count == settings.WEBSITE_ORIGIN_MISMATCH_ALERT_COUNT:
+            await alert_service.raise_alert(
+                self.db, organization_id=website.organization_id,
+                type=alert_service.AlertType.WEBSITE_DISCONNECTED, severity="warning",
+                dedupe_key=alert_service.website_disconnected_key(website.id),
+                title=f"Tracking token of {website.domain} used from another site",
+                message=(f"{count} tracking batches this hour came from {origin_host}, which is not one of "
+                         f"{website.domain}'s domains. They were rejected. Add the domain to the website if it's "
+                         "yours, or rotate the token."),
+                resource_type="website", resource_id=str(website.id), details={"origin": origin_host},
+            )
+            await self.db.commit()
+
+    async def _verify_by_first_event(self, website: Website, origin_host: str | None, request: Request) -> TrackingResponse:
+        """Verification mode (task 023): the first event from the website's own origin verifies it.
+        Nothing is stored or scored before that."""
+        if not host_allowed(website, origin_host):
+            raise TrackingRejected(
+                "Website not verified: install the snippet on the website, or verify it from the dashboard."
+            )
+        now = datetime.now(timezone.utc)
+        website.is_verified = True
+        website.verified_at = now
+        website.verification_method = "first_event"
+        website.last_event_at = now
+        audit_service.record(
+            self.db, action=AuditAction.WEBSITE_VERIFIED, result=AuditResult.SUCCESS,
+            organization_id=website.organization_id, resource_type="website", resource_id=website.id,
+            request=request, details={"domain": website.domain, "method": "first_event", "origin": origin_host},
+        )
+        await self.db.commit()
+        logger.info("Website %s verified by its first event from %s", website.domain, origin_host)
+        return TrackingResponse(status="verified")
+
+    @staticmethod
+    def _touch_website(website: Website) -> None:
+        # At most one write a minute: busy sites must not contend on their website row.
+        now = datetime.now(timezone.utc)
+        if website.last_event_at is None or website.last_event_at < now - LAST_EVENT_WRITE_INTERVAL:
+            website.last_event_at = now
+
+    async def _update_client_signals(self, session: Session, origin_host: str | None, client_ip: str) -> None:
+        """Non-browser and rate-limited clients (tasks 023, 031) for AUTOMATION_SIGNAL."""
+        signals = dict(session.extra_signals or {})
+        if origin_host is None:
+            signals["origin_missing"] = True
+        limited = await recent_rate_limited(client_ip)
+        if limited:
+            signals["rate_limited"] = max(int(signals.get("rate_limited") or 0), limited)
+        if signals != (session.extra_signals or {}):
+            session.extra_signals = signals
 
     async def _get_or_create_visitor(
         self,
@@ -330,6 +430,11 @@ class TrackingService:
             visitor_id=visitor.id,
             session_token=first_event.session_token,
             gclid=first_event.gclid,
+            gbraid=first_event.gbraid,
+            wbraid=first_event.wbraid,
+            ad_group_id=first_event.adgroup_id,
+            keyword=first_event.keyword,
+            match_type=first_event.matchtype,
             google_campaign_id=matched_campaign.id if matched_campaign is not None else None,
             utm_source=first_event.utm_source,
             utm_medium=first_event.utm_medium,
@@ -474,9 +579,12 @@ class TrackingService:
     def _update_session_counters(
         self, session: Session, payload: TrackingBatchIn
     ) -> None:
+        human_actions = 0
         for ev in payload.events:
             if ev.event_type in INTERACTION_EVENT_TYPES:
                 session.interaction_count = (session.interaction_count or 0) + 1
+            if ev.event_type in HUMAN_ACTION_EVENT_TYPES:
+                human_actions += 1
 
             if ev.event_type == EventType.PAGE_VIEW.value:
                 session.page_count = (session.page_count or 0) + 1
@@ -489,6 +597,10 @@ class TrackingService:
                         session.scroll_depth or 0.0,
                         float(ev.payload["depth"]),
                     )
+        if human_actions:
+            signals = dict(session.extra_signals or {})
+            signals["human_actions"] = int(signals.get("human_actions") or 0) + human_actions
+            session.extra_signals = signals
 
 
 # (column name, window seconds) — spec §16

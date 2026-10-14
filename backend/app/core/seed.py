@@ -1,43 +1,33 @@
 """
-Idempotent seeding — safe to run on every startup.
-Creates a default org, admin user, and test website if they don't exist.
+Development seed (task 032) — runs only when ENVIRONMENT=development / test.
+
+Creates a default organization, an owner and a verified localhost website so a
+fresh checkout works. Production never seeds: create the first owner with
+`python -m app.cli create-admin`.
 """
 from __future__ import annotations
 
 import logging
 import secrets
 
-import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import (
-    Organization,
-    ProtectionMode,
-    User,
-    UserRole,
-    Website,
-)
+from app.core.security import hash_password
+from app.models import Organization, ProtectionMode, User, UserRole, Website
 
 logger = logging.getLogger(__name__)
 
 
-def hash_password(plain_password: str) -> str:
-    """Hash a password using bcrypt. Truncates to 72 bytes per bcrypt spec."""
-    password_bytes = plain_password.encode("utf-8")[:72]
-    hashed = bcrypt.hashpw(password_bytes, bcrypt.gensalt())
-    return hashed.decode("utf-8")
-
-
 async def seed_defaults(db: AsyncSession) -> None:
-    # ---- Organization ----
-    result = await db.execute(
-        select(Organization).where(
-            Organization.slug == settings.DEFAULT_ORGANIZATION_SLUG
-        )
-    )
-    org = result.scalar_one_or_none()
+    if not settings.is_development:
+        logger.info("ENVIRONMENT=%s: development seed skipped", settings.ENVIRONMENT)
+        return
+
+    org = (
+        await db.execute(select(Organization).where(Organization.slug == settings.DEFAULT_ORGANIZATION_SLUG))
+    ).scalar_one_or_none()
     if not org:
         org = Organization(
             name=settings.DEFAULT_ORGANIZATION_NAME,
@@ -47,43 +37,36 @@ async def seed_defaults(db: AsyncSession) -> None:
         db.add(org)
         await db.flush()
         logger.info("Created organization: %s", org.name)
-    else:
-        logger.debug("Organization already exists: %s", org.slug)
 
-    # ---- Admin user ----
-    result = await db.execute(
-        select(User).where(User.email == settings.DEFAULT_ADMIN_EMAIL)
-    )
-    user = result.scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.email == settings.DEFAULT_ADMIN_EMAIL))).scalar_one_or_none()
     if not user:
-        user = User(
+        password = settings.DEFAULT_ADMIN_PASSWORD
+        if not password:
+            password = secrets.token_urlsafe(12)
+            logger.warning(
+                "DEVELOPMENT: created %s with generated password %s (set DEFAULT_ADMIN_PASSWORD to choose one)",
+                settings.DEFAULT_ADMIN_EMAIL, password,
+            )
+        db.add(User(
             organization_id=org.id,
             email=settings.DEFAULT_ADMIN_EMAIL,
-            hashed_password=hash_password(settings.DEFAULT_ADMIN_PASSWORD),
+            hashed_password=hash_password(password),
             full_name=settings.DEFAULT_ADMIN_FULL_NAME,
             role=UserRole.OWNER,
-        )
-        db.add(user)
-        logger.info("Created admin user: %s", user.email)
-    else:
-        logger.debug("Admin user already exists: %s", user.email)
+        ))
+        logger.info("Created development owner: %s", settings.DEFAULT_ADMIN_EMAIL)
 
-    # ---- Test website ----
-    result = await db.execute(
-        select(Website).where(Website.organization_id == org.id)
-    )
-    website = result.scalar_one_or_none()
+    website = (await db.execute(select(Website).where(Website.organization_id == org.id))).scalars().first()
     if not website:
-        token = secrets.token_urlsafe(24)
         website = Website(
             organization_id=org.id,
             domain="localhost",
             display_name="Local Test Site",
-            tracking_token=token,
+            tracking_token=secrets.token_urlsafe(24),
             is_verified=True,
         )
         db.add(website)
-        logger.info("Created website: %s", website.domain)
-    logger.info("Tracking token: %s", website.tracking_token)
+        logger.info("Created development website: localhost")
+    logger.info("Development tracking token: %s", website.tracking_token)
 
     await db.commit()

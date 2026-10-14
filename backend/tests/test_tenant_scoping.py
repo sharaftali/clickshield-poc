@@ -84,7 +84,8 @@ async def test_lost_insert_race_recovers_without_rolling_back_the_transaction(mo
     monkeypatch.setattr(service, "_resolve_google_campaign", no_campaign)
     monkeypatch.setattr(service.ip_intel, "lookup", no_intel)
     first_event = SimpleNamespace(
-        session_token="s_race_token", gclid=None, campaign_id=None, utm_source=None, utm_medium=None,
+        session_token="s_race_token", gclid=None, gbraid=None, wbraid=None, adgroup_id=None, keyword=None,
+        matchtype=None, campaign_id=None, utm_source=None, utm_medium=None,
         utm_campaign=None, utm_term=None, utm_content=None, referrer=None, page_url="https://a.test/",
         language=None, timezone=None, payload={},
     )

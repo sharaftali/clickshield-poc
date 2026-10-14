@@ -1,20 +1,61 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Click Shield Test</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Click Shield test site</title>
+  <!--
+    Tracker test page (task 024). Serve it from the website's domain (e.g. `python -m http.server 5500`
+    and add `localhost` as the website), open it with ?gclid=TEST&utm_source=google to simulate an ad click.
+    Replace REPLACE_WITH_SITE_TOKEN with the token from the Websites page.
+  -->
+  <script async src="http://localhost:8000/track.js" data-site-id="REPLACE_WITH_SITE_TOKEN"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
+    nav a { margin-right: 12px; }
+    section { min-height: 900px; border-top: 1px solid #ddd; padding-top: 16px; }
+    form { display: grid; gap: 8px; max-width: 320px; }
+  </style>
 </head>
 <body>
-  <h1>Click Shield Test Page</h1>
-  <p>Open the browser console to see tracking events.</p>
-  <a href="#cta" id="cta-link">Click here</a>
+  <h1>Click Shield test site</h1>
+  <p>Every event type of spec §11 can be produced here: open the browser network tab and watch <code>/api/v1/track</code>.</p>
+
+  <!-- SPA navigation: pushState → page_view with the new URL -->
+  <nav>
+    <a href="/services" data-spa>Services (SPA)</a>
+    <a href="/pricing" data-spa>Pricing (SPA)</a>
+    <a href="tel:+15550100">Call us (phone_click)</a>
+    <a href="https://example.org/partner">Partner site (outbound_click)</a>
+  </nav>
+  <p id="route">Route: /</p>
+
+  <!-- form_start on first focus, form_submit on submit -->
+  <form id="quote" onsubmit="event.preventDefault(); this.querySelector('output').textContent = 'Thanks!';">
+    <input name="name" placeholder="Your name">
+    <input name="email" type="email" placeholder="Email">
+    <button>Request a quote</button>
+    <output></output>
+  </form>
+
+  <p>
+    <button onclick="window.ClickShield && ClickShield.trackConversion({ value: 49 })">Buy (conversion)</button>
+    <button onclick="window.ClickShield && ClickShield.consent(true)">Grant consent</button>
+  </p>
+
+  <!-- Long sections: scroll events at 25 / 50 / 75 / 100 % -->
+  <section><h2>Section 1</h2></section>
+  <section><h2>Section 2</h2></section>
+  <section><h2>Section 3</h2><p>Close the tab to send session_end (sendBeacon).</p></section>
 
   <script>
-    window.ClickShieldConfig = {
-      siteToken: '-yBte1BRtDMcPtXnIbwEXL3P0s0hAtOl',
-      trackingUrl: 'http://localhost:8000/api/v1/track',
-    };
+    document.querySelectorAll('a[data-spa]').forEach(function (link) {
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        history.pushState({}, '', link.getAttribute('href'));
+        document.getElementById('route').textContent = 'Route: ' + location.pathname;
+      });
+    });
   </script>
-  <script src="http://localhost:8000/api/v1/tracking.js"></script>
 </body>
 </html>

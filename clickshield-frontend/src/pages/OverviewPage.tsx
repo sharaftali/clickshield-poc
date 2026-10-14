@@ -1,4 +1,8 @@
+import { useState } from "react";
+import type React from "react";
 import { useQuery } from "@tanstack/react-query";
+import { alertsApi } from "../services/p3Api";
+import { RangePicker } from "../components/ui";
 import { Link } from "react-router-dom";
 import { dashboardApi } from "../services/apiService";
 import { verdictBadge, riskColor, fmtDate, fmtNumber } from "../lib/utils";
@@ -17,11 +21,18 @@ const ANOMALY_LABELS: Record<DashboardAnomaly["metric"], string> = {
 };
 
 export default function OverviewPage() {
+  const [range, setRange] = useState<"today" | "7d" | "30d">("today");
   const { data: overview, isLoading: overviewLoading, refetch: refetchOverview } = useQuery<DashboardOverview>({
-    queryKey: ["dashboard", "overview"],
-    queryFn: dashboardApi.overview,
+    queryKey: ["dashboard", "overview", range],
+    queryFn: () => dashboardApi.overview(range),
     refetchInterval: 10000,
   });
+  const { data: criticalAlerts } = useQuery({
+    queryKey: ["alerts", "active"],
+    queryFn: () => alertsApi.list("active"),
+    refetchInterval: 30000,
+  });
+  const critical = (criticalAlerts?.items ?? []).filter((a) => a.severity === "critical" && a.status === "open");
 
   const { data: sessions, isLoading: sessionsLoading } = useQuery<DashboardSessionSummary[]>({
     queryKey: ["dashboard", "sessions", 6],
@@ -49,9 +60,14 @@ export default function OverviewPage() {
 
   const statItems = [
     {
-      label: "Total Sessions",
-      value: overview ? fmtNumber(overview.total_sessions) : "—",
-      sub: "Monitored visitor sessions",
+      label: "Paid Clicks",
+      value: overview ? fmtNumber(overview.clicks) : "—",
+      sub: `${overview ? fmtNumber(overview.total_sessions) : "—"} sessions in total`,
+    },
+    {
+      label: "Fraud Rate",
+      value: overview ? `${(overview.fraud_rate * 100).toFixed(1)}%` : "—",
+      sub: "Fraud sessions / all sessions",
     },
     {
       label: "Suspicious Traffic",
@@ -70,9 +86,14 @@ export default function OverviewPage() {
       sub: "Confirmed malicious clicks",
     },
     {
-      label: "Protected IPs",
+      label: "Protected / Blocked",
       value: overview ? fmtNumber(overview.protected_ips) : "—",
-      sub: "Actively excluded from Ads",
+      sub: "IPs excluded in Google Ads now",
+    },
+    {
+      label: "Connected",
+      value: overview ? `${overview.connected_websites} · ${overview.connected_google_accounts} · ${overview.protected_campaigns}` : "—",
+      sub: "Websites · Google accounts · protected campaigns",
     },
     {
       label: "Avg Risk Score",
@@ -91,6 +112,7 @@ export default function OverviewPage() {
       <header className="topbar">
         <h1 className="topbar-title">Traffic &amp; Fraud Overview</h1>
         <div className="topbar-actions">
+          <RangePicker value={range} options={["today", "7d", "30d"] as const} onChange={setRange} />
           <button className="btn btn-secondary btn-sm" onClick={() => refetchOverview()}>
             <RefreshIcon size={13} />
             Refresh
@@ -99,6 +121,30 @@ export default function OverviewPage() {
       </header>
 
       <main className="page-body">
+        {/* Critical alerts (task 028), e.g. "Protection action failed" (spec §43) */}
+        {critical.length > 0 && (
+          <div className="alert alert-error" style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+            <span><strong>{critical[0].title}</strong> — {critical[0].message}
+              {critical.length > 1 && ` (+${critical.length - 1} more)`}</span>
+            <Link to="/alerts">View alerts</Link>
+          </div>
+        )}
+
+        {/* Protection status (spec §46) */}
+        {overview && (
+          <div className={`alert ${overview.protection_status === "ACTIVE" ? "alert-success" : "alert-info"}`}>
+            Protection: <strong>{overview.protection_status === "ACTIVE" ? "active" : "setup required"}</strong>
+            {overview.protection_missing.length > 0 && (
+              <> — still missing: {overview.protection_missing.map((m) => ({
+                verified_website: <Link key={m} to="/websites">a verified website</Link>,
+                google_connection: <Link key={m} to="/google">a Google Ads connection</Link>,
+                protected_campaign: <Link key={m} to="/google">a protected campaign</Link>,
+              }[m] ?? m)).reduce<React.ReactNode[]>((acc, el, i) => (i ? [...acc, ", ", el] : [el]), [])}</>
+            )}
+            <span style={{ float: "right", fontSize: 12, color: "var(--text-muted)" }}>Times in {overview.timezone}</span>
+          </div>
+        )}
+
         {/* Stat Cards Grid */}
         <section className="stats-grid">
           {statItems.map((stat, idx) => (
@@ -202,7 +248,7 @@ export default function OverviewPage() {
                         <td>
                           <span className={verdictBadge(s.verdict)}>{s.verdict}</span>
                         </td>
-                        <td className="text-mono">{s.ip_address ?? "Unknown"}</td>
+                        <td className="text-mono"><Link to={`/sessions/${s.id}`}>{s.ip_address ?? "Unknown"}</Link></td>
                         <td>
                           <div className="risk-bar-wrap">
                             <div className="risk-bar-bg" style={{ width: 60 }}>

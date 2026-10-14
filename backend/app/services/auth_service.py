@@ -8,12 +8,51 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.security import create_token, hash_password, verify_password
 from app.models.enums import AuditResult, ProtectionMode, UserRole
 from app.models.organization import Organization, User
-from app.schemas.auth import AuthResponse, AuthenticatedUserResponse, OrganizationSummary, TokenPair, UserPublic
+from app.schemas.auth import (
+    AuthResponse,
+    AuthenticatedUserResponse,
+    InvitePreview,
+    OrganizationSummary,
+    TokenPair,
+    UserPublic,
+)
 from app.services import audit_service
 from app.services.audit_service import AuditAction
+
+
+def user_public(user: User) -> UserPublic:
+    return UserPublic(
+        id=str(user.id),
+        organization_id=str(user.organization_id),
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        is_active=user.is_active,
+        is_platform_admin=bool(user.is_platform_admin),
+        alert_emails=bool(user.alert_emails),
+    )
+
+
+def organization_summary(organization: Organization) -> OrganizationSummary:
+    return OrganizationSummary(
+        id=str(organization.id),
+        name=organization.name,
+        slug=organization.slug,
+        protection_mode=organization.protection_mode,
+        is_active=organization.is_active,
+    )
+
+
+def issue_tokens(user: User) -> TokenPair:
+    return TokenPair(
+        access_token=create_token(str(user.id), "access"),
+        refresh_token=create_token(str(user.id), "refresh", expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)),
+        expires_in_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
+    )
 
 
 class AuthService:
@@ -86,25 +125,12 @@ class AuthService:
         refresh_token = create_token(str(user.id), "refresh", expires_delta=timedelta(days=7))
 
         return AuthResponse(
-            user=UserPublic(
-                id=str(user.id),
-                organization_id=str(user.organization_id),
-                email=user.email,
-                full_name=user.full_name,
-                role=user.role,
-                is_active=user.is_active,
-            ),
-            organization=OrganizationSummary(
-                id=str(organization.id),
-                name=organization.name,
-                slug=organization.slug,
-                protection_mode=organization.protection_mode,
-                is_active=organization.is_active,
-            ),
+            user=user_public(user),
+            organization=organization_summary(organization),
             tokens=TokenPair(
                 access_token=access_token,
                 refresh_token=refresh_token,
-                expires_in_minutes=60,
+                expires_in_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
             ),
         )
 
@@ -157,25 +183,12 @@ class AuthService:
         refresh_token = create_token(str(user.id), "refresh", expires_delta=timedelta(days=7))
 
         return AuthResponse(
-            user=UserPublic(
-                id=str(user.id),
-                organization_id=str(user.organization_id),
-                email=user.email,
-                full_name=user.full_name,
-                role=user.role,
-                is_active=user.is_active,
-            ),
-            organization=OrganizationSummary(
-                id=str(organization.id),
-                name=organization.name,
-                slug=organization.slug,
-                protection_mode=organization.protection_mode,
-                is_active=organization.is_active,
-            ),
+            user=user_public(user),
+            organization=organization_summary(organization),
             tokens=TokenPair(
                 access_token=access_token,
                 refresh_token=refresh_token,
-                expires_in_minutes=60,
+                expires_in_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
             ),
         )
 
@@ -212,19 +225,45 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found for this user.")
 
         return AuthenticatedUserResponse(
-            user=UserPublic(
-                id=str(user.id),
-                organization_id=str(user.organization_id),
-                email=user.email,
-                full_name=user.full_name,
-                role=user.role,
-                is_active=user.is_active,
-            ),
-            organization=OrganizationSummary(
-                id=str(organization.id),
-                name=organization.name,
-                slug=organization.slug,
-                protection_mode=organization.protection_mode,
-                is_active=organization.is_active,
-            ),
+            user=user_public(user),
+            organization=organization_summary(organization),
         )
+
+    @staticmethod
+    async def preview_invitation(db: AsyncSession, token: str) -> InvitePreview:
+        from app.api.users import find_open_invitation
+
+        invitation = await find_open_invitation(db, token)
+        if invitation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This invitation is invalid or has expired.")
+        organization = await db.get(Organization, invitation.organization_id)
+        return InvitePreview(organization_name=organization.name, email=invitation.email, role=invitation.role)
+
+    @staticmethod
+    async def accept_invitation(
+        db: AsyncSession, *, token: str, full_name: str, password: str, request: Request | None = None
+    ) -> AuthResponse:
+        from datetime import datetime, timezone
+
+        from app.api.users import find_open_invitation
+
+        invitation = await find_open_invitation(db, token)
+        if invitation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This invitation is invalid or has expired.")
+        if await AuthService._get_user_by_email(db, invitation.email):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists.")
+        organization = await db.get(Organization, invitation.organization_id)
+        user = User(
+            organization_id=organization.id, email=invitation.email, hashed_password=hash_password(password),
+            full_name=full_name.strip(), role=invitation.role, is_active=True,
+        )
+        db.add(user)
+        invitation.accepted_at = datetime.now(timezone.utc)
+        await db.flush()
+        audit_service.record(
+            db, action=AuditAction.INVITATION_ACCEPTED, result=AuditResult.SUCCESS,
+            organization_id=organization.id, user_id=user.id, resource_type="invitation",
+            resource_id=invitation.id, request=request, details={"email": user.email, "role": user.role},
+        )
+        await db.commit()
+        return AuthResponse(user=user_public(user), organization=organization_summary(organization), tokens=issue_tokens(user))

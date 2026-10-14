@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useState, useMemo } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../services/apiService";
@@ -174,7 +175,7 @@ export default function SessionsPage() {
                         )}
                       </td>
                       <td className="text-mono" style={{ fontWeight: 550 }}>
-                        {s.ip_address ?? "Unknown"}
+                        <Link to={`/sessions/${s.id}`} title="Open session detail">{s.ip_address ?? "Unknown"}</Link>
                       </td>
                       <td style={{ fontSize: 12.5 }}>
                         <div>{s.device ?? "Unknown Device"}</div>

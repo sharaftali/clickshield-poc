@@ -13,7 +13,7 @@ from app.models.enums import (
     UserRole,
     Verdict,
 )
-from app.models.organization import Organization, User
+from app.models.organization import Organization, OrganizationInvitation, User
 from app.models.website import Website
 from app.models.google import GoogleCampaign, GoogleCampaignLocation, GoogleConnection
 from app.models.traffic import Event, Session, Visitor
@@ -22,6 +22,7 @@ from app.models.action import Exclusion, PlatformAction
 from app.models.audit import AuditLog
 from app.models.rules import Rule, RuleOverride
 from app.models.anomaly import CampaignTrafficStat, TrafficAnomaly
+from app.models.alerts import Alert, Notification
 
 __all__ = [
     # Base
@@ -41,6 +42,7 @@ __all__ = [
     "Verdict",
     # Models
     "Organization",
+    "OrganizationInvitation",
     "User",
     "Website",
     "GoogleConnection",
@@ -58,4 +60,6 @@ __all__ = [
     "RuleOverride",
     "CampaignTrafficStat",
     "TrafficAnomaly",
+    "Alert",
+    "Notification",
 ]

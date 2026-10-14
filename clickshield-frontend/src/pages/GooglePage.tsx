@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { googleApi } from "../services/apiService";
 import { useAuthStore } from "../store/authStore";
+import { useCan } from "../lib/permissions";
 import type {
   CampaignSyncSummary,
   GoogleAccountOut,
@@ -13,6 +14,8 @@ import type {
 
 export default function GooglePage() {
   const accessToken = useAuthStore((s) => s.accessToken);
+  const canManage = useCan("google:manage");
+  const canToggle = useCan("protection:manage");
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectNotif, setSelectNotif] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
@@ -99,12 +102,18 @@ export default function GooglePage() {
     },
   });
 
-  const handleConnect = () => {
-    // Redirect to backend OAuth endpoint — must carry Bearer token in a query param workaround
-    // since browser navigations don't send Authorization headers.
-    // The backend starts the OAuth flow as GET /api/v1/google/connect (requires auth).
-    window.location.href = `http://127.0.0.1:8000/api/v1/google/connect?token=${accessToken ?? ""}`;
-  };
+  // Task 033: start the flow with an authenticated POST; the browser then goes to Google.
+  // No JWT ever appears in a URL.
+  const connectMutation = useMutation({
+    mutationFn: googleApi.connect,
+    onSuccess: ({ authorization_url }) => {
+      window.location.href = authorization_url;
+    },
+    onError: (err: any) => {
+      setSelectNotif({ type: "error", message: err?.response?.data?.detail ?? "Could not start the Google connection." });
+    },
+  });
+  const handleConnect = () => connectMutation.mutate();
 
   const handleSelectCustomer = (acc: GoogleAccountOut) => {
     const body: SelectCustomerIn = {
@@ -152,10 +161,12 @@ export default function GooglePage() {
       <header className="topbar">
         <h1 className="topbar-title">Google Ads Integration</h1>
         <div className="topbar-actions">
-          <button className="btn btn-primary btn-sm" onClick={handleConnect} disabled={!accessToken}>
-            <GoogleIcon size={14} />
-            Connect Google Ads
-          </button>
+          {canManage && (
+            <button className="btn btn-primary btn-sm" onClick={handleConnect} disabled={!accessToken || connectMutation.isPending}>
+              <GoogleIcon size={14} />
+              {connectMutation.isPending ? "Opening Google..." : "Connect Google Ads"}
+            </button>
+          )}
           <button
             className="btn btn-secondary btn-sm"
             onClick={() => { refetchConn(); refetchAcc(); refetchCampaigns(); }}
@@ -330,7 +341,7 @@ export default function GooglePage() {
                         <button
                           className="btn btn-secondary btn-sm"
                           onClick={() => handleSelectCustomer(acc)}
-                          disabled={selectCustomerMutation.isPending}
+                          disabled={!canManage || selectCustomerMutation.isPending}
                         >
                           {selectCustomerMutation.isPending ? "Linking..." : "Use this account"}
                         </button>
@@ -355,7 +366,7 @@ export default function GooglePage() {
             <button
               className="btn btn-secondary btn-sm"
               onClick={() => syncCampaignsMutation.mutate()}
-              disabled={!hasSelectedCustomer || isBusy}
+              disabled={!canManage || !hasSelectedCustomer || isBusy}
             >
               {syncCampaignsMutation.isPending ? "Syncing campaigns..." : "Sync Campaigns"}
             </button>
@@ -436,7 +447,7 @@ export default function GooglePage() {
                               protectionEnabled: !campaign.protection_enabled,
                             })
                           }
-                          disabled={!campaign.supports_ip_exclusion || campaignProtectionMutation.isPending}
+                          disabled={!canToggle || !campaign.supports_ip_exclusion || campaignProtectionMutation.isPending}
                         >
                           {campaign.protection_enabled ? "Protection ON" : "Enable Protection"}
                         </button>

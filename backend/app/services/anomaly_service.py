@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models import AuditResult, CampaignTrafficStat, TrafficAnomaly
-from app.services import audit_service
+from app.services import alert_service, audit_service
 from app.services.audit_service import AuditAction
 
 logger = logging.getLogger(__name__)
@@ -289,6 +289,19 @@ async def detect_anomalies(db: AsyncSession, now: datetime) -> dict[str, int]:
                         details={"metric": finding.metric, "observed": finding.observed, "expected": finding.expected,
                                  "robust_z": finding.score, "level": finding.level,
                                  "window_start": hour, "fraud_signal": finding.metric in FRAUD_METRICS},
+                    )
+                    # Task 028: spikes → UNUSUAL_TRAFFIC; traffic stopping → TRACKING_FAILURE (tracking removed?).
+                    drop = finding.metric == "ad_landings_drop"
+                    await alert_service.raise_alert(
+                        db, organization_id=orgs[campaign_id],
+                        type=alert_service.AlertType.TRACKING_FAILURE if drop else alert_service.AlertType.UNUSUAL_TRAFFIC,
+                        severity="warning",
+                        dedupe_key=f"{'traffic_drop' if drop else 'unusual_traffic'}:{campaign_id}:{finding.metric}",
+                        title="Paid traffic stopped on a campaign" if drop else "Unusual traffic on a campaign",
+                        message=(f"{finding.metric}: observed {finding.observed}, usually {finding.expected} "
+                                 f"(robust z {finding.score}) in the hour from {hour:%Y-%m-%d %H:%M} UTC."),
+                        resource_type="campaign", resource_id=str(campaign_id),
+                        details={"metric": finding.metric, "observed": finding.observed, "expected": finding.expected},
                     )
     return metrics
 

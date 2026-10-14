@@ -20,6 +20,8 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 PROCESS_ACTION_JOB = "process_action"
+SEND_EMAIL_JOB = "send_email"
+DELIVER_NOTIFICATIONS_JOB = "deliver_notifications"
 
 _pool: ArqRedis | None = None
 
@@ -57,6 +59,18 @@ async def enqueue_actions(action_ids: Iterable[uuid.UUID]) -> int:
         )
         await close_pool()
     return pushed
+
+
+async def enqueue_job(name: str, *args, job_id: str | None = None) -> bool:
+    """Push any job; False (logged) when Redis is unreachable. Never raises."""
+    try:
+        pool = await _get_pool()
+        await pool.enqueue_job(name, *args, _job_id=job_id)
+        return True
+    except Exception as exc:
+        logger.warning("Could not push job %s to Redis (%s)", name, exc)
+        await close_pool()
+        return False
 
 
 async def close_pool() -> None:

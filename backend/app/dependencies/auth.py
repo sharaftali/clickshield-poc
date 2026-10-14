@@ -6,9 +6,10 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import rate_limit
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import decode_token, get_user_from_token
-from app.models.enums import UserRole
 from app.models.organization import User
 
 security = HTTPBearer(auto_error=False)
@@ -34,20 +35,11 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return await get_user_from_token(db, token)
+    user = await get_user_from_token(db, token)
+    # Per-user API limit (task 031); fails open when Redis is down.
+    await rate_limit.enforce(f"api:user:{user.id}", settings.API_RATE_LIMIT_PER_USER_PER_MINUTE, 60)
+    return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
-
-async def require_admin(current_user: CurrentUser) -> User:
-    """Owners and admins only: protection mode, rule tuning (task 030 will widen RBAC)."""
-    if current_user.role not in (UserRole.OWNER, UserRole.ADMIN):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only organization owners and admins can change this setting.",
-        )
-    return current_user
-
-
-AdminUser = Annotated[User, Depends(require_admin)]

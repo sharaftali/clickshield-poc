@@ -55,3 +55,10 @@ jobs:
 
       - name: Tests (unit + database + spec §75 POC scenarios)
         run: pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tracker tests (simulated browser, task 024)
+        run: node --test tests/js/tracker.test.mjs

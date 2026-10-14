@@ -119,7 +119,32 @@ async def get_capacity(db: AsyncSession, campaign: GoogleCampaign) -> Capacity:
 
 async def sync_exclusion_count(db: AsyncSession, campaign: GoogleCampaign) -> None:
     await db.flush()
-    campaign.exclusion_count = (await get_capacity(db, campaign)).used_by_click_shield
+    capacity = await get_capacity(db, campaign)
+    campaign.exclusion_count = capacity.used_by_click_shield
+    await capacity_alert(db, campaign, capacity)
+
+
+async def capacity_alert(db: AsyncSession, campaign: GoogleCampaign, capacity: Capacity) -> None:
+    """Spec §66 "Exclusion limit reached": warning from 90%, critical at 100%, resolved below 90%."""
+    from app.services import alert_service
+
+    key = alert_service.capacity_key(campaign.id)
+    if capacity.limit <= 0 or capacity.used < WARNING_RATIO * capacity.limit:
+        await alert_service.resolve(db, dedupe_key=key)
+        return
+    organization_id = await db.scalar(
+        select(GoogleConnection.organization_id).where(GoogleConnection.id == campaign.connection_id)
+    )
+    full = capacity.used >= capacity.limit
+    await alert_service.raise_alert(
+        db, organization_id=organization_id, type=alert_service.AlertType.EXCLUSION_LIMIT_REACHED,
+        severity="critical" if full else "warning", dedupe_key=key,
+        title=f"Campaign {campaign.name} {'reached' if full else 'is near'} its IP exclusion limit",
+        message=(f"{capacity.used} of {capacity.limit} IP exclusion slots are used on {campaign.name}. "
+                 + ("New fraud IPs wait in the overflow queue." if full else "")).strip(),
+        resource_type="campaign", resource_id=str(campaign.id),
+        details={"used": capacity.used, "limit": capacity.limit},
+    )
 
 
 def _open_removal_exists(campaign: GoogleCampaign):

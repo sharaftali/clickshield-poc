@@ -34,6 +34,8 @@ class UserPublic(BaseModel):
     full_name: str | None = None
     role: UserRole
     is_active: bool
+    is_platform_admin: bool = False
+    alert_emails: bool = True
 
 
 class TokenPair(BaseModel):
@@ -109,3 +111,20 @@ class AuthResponse(BaseModel):
 class AuthenticatedUserResponse(BaseModel):
     user: UserPublic
     organization: OrganizationSummary
+
+
+class InvitePreview(BaseModel):
+    organization_name: str
+    email: str
+    role: UserRole
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=200)
+    full_name: Annotated[str, Field(min_length=2, max_length=120)]
+    password: Annotated[str, Field(min_length=8, max_length=128)]
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return RegisterRequest.validate_password(value)

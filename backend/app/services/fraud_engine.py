@@ -12,6 +12,7 @@ configuration used, so each verdict stays explainable (spec §33, §52).
 """
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.metrics import scoring_latency
 from app.models import FraudEvent, Session, Verdict
 from app.services.features import build_context
 from app.services.ip_reputation import build_reputation_upsert, counter_deltas, load_reputation
@@ -113,6 +115,7 @@ class FraudEngine:
         previous_verdict: Verdict,
         policy: ProtectionPolicy | None = None,
     ) -> Decision:
+        started = time.perf_counter()
         policy = policy or get_policy(None)
         rules = await load_rules(db, session.organization_id)
         # Built from this org's OTHER, earlier sessions on the IP, with decay (tasks 006, 020).
@@ -146,4 +149,5 @@ class FraudEngine:
             await db.execute(
                 build_reputation_upsert(session, reputation, deltas, now=datetime.now(timezone.utc))
             )
+        scoring_latency.observe((time.perf_counter() - started) * 1000)  # health page (task 027)
         return decision

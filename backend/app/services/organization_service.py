@@ -20,6 +20,10 @@ def organization_response(organization: Organization) -> OrganizationResponse:
         protection_mode=organization.protection_mode,
         is_active=organization.is_active,
         protection_settings=organization.protection_settings,
+        timezone=organization.timezone,
+        raw_events_retention_days=organization.raw_events_retention_days,
+        sessions_retention_days=organization.sessions_retention_days,
+        fraud_session_retention_days=organization.fraud_session_retention_days,
         policy=ProtectionPolicyOut(**get_policy(organization).as_dict()),
         mode_defaults={
             mode.value: ProtectionPolicyOut(mode=mode, **mode_defaults(mode))
@@ -65,6 +69,21 @@ class OrganizationService:
             )
         if organization.protection_mode == ProtectionMode.CUSTOM and not organization.protection_settings:
             organization.protection_settings = validate_custom_settings({})
+
+        settings_changes = {}
+        fields = payload.model_fields_set
+        for name in ("timezone", "raw_events_retention_days", "sessions_retention_days", "fraud_session_retention_days"):
+            if name in fields and (name != "timezone" or payload.timezone is not None):
+                value = getattr(payload, name)
+                if getattr(organization, name) != value:
+                    settings_changes[name] = {"from": getattr(organization, name), "to": value}
+                    setattr(organization, name, value)
+        if settings_changes:
+            audit_service.record(
+                db, action=AuditAction.ORGANIZATION_SETTINGS_CHANGED, result=AuditResult.SUCCESS,
+                organization_id=organization.id, user_id=user.id, resource_type="organization",
+                resource_id=organization.id, request=request, details={"changes": settings_changes},
+            )
 
         after = get_policy(organization).as_dict()
         if before != after or previous_mode != organization.protection_mode:

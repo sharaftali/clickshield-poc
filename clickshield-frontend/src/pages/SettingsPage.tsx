@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { orgApi, rulesApi } from "../services/apiService";
+import { privacyApi } from "../services/p3Api";
 import { useAuthStore } from "../store/authStore";
 import type {
   FraudRule,
@@ -57,7 +58,9 @@ export default function SettingsPage() {
           </div>
         )}
         <ModeSection canEdit={canEdit} />
+        <ReportingSection canEdit={canEdit} />
         <RulesSection canEdit={canEdit} />
+        {role === "owner" && <PrivacySection />}
       </main>
     </>
   );
@@ -366,5 +369,116 @@ function ParamInput({ name, value, disabled, onChange }: { name: string; value: 
         onChange={(e) => onChange(e.target.value)}
       />
     </>
+  );
+}
+
+const TIMEZONES = (() => {
+  try {
+    return (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.("timeZone") ?? ["UTC"];
+  } catch {
+    return ["UTC"];
+  }
+})();
+
+// Reporting timezone (task 025) and data retention overrides (task 029).
+function ReportingSection({ canEdit }: { canEdit: boolean }) {
+  const queryClient = useQueryClient();
+  const { data: org } = useQuery<OrganizationResponse>({ queryKey: ["organization"], queryFn: orgApi.me });
+  const [timezone, setTimezone] = useState("UTC");
+  const [retention, setRetention] = useState({ raw_events_retention_days: "", sessions_retention_days: "", fraud_session_retention_days: "" });
+
+  useEffect(() => {
+    if (!org) return;
+    setTimezone(org.timezone);
+    setRetention({
+      raw_events_retention_days: org.raw_events_retention_days?.toString() ?? "",
+      sessions_retention_days: org.sessions_retention_days?.toString() ?? "",
+      fraud_session_retention_days: org.fraud_session_retention_days?.toString() ?? "",
+    });
+  }, [org]);
+
+  const save = useMutation({
+    mutationFn: () => orgApi.update({
+      timezone,
+      raw_events_retention_days: retention.raw_events_retention_days ? Number(retention.raw_events_retention_days) : null,
+      sessions_retention_days: retention.sessions_retention_days ? Number(retention.sessions_retention_days) : null,
+      fraud_session_retention_days: retention.fraud_session_retention_days ? Number(retention.fraud_session_retention_days) : null,
+    }),
+    onSuccess: (data) => queryClient.setQueryData(["organization"], data),
+  });
+
+  const fields: { key: keyof typeof retention; label: string; help: string }[] = [
+    { key: "raw_events_retention_days", label: "Raw events (days)", help: "Page views, clicks, scrolls. Platform default 30." },
+    { key: "sessions_retention_days", label: "Sessions (days)", help: "Then anonymized: IP shortened, identifiers removed. Default 90." },
+    { key: "fraud_session_retention_days", label: "Fraud sessions (days)", help: "Kept longer as fraud intelligence. Default 365." },
+  ];
+
+  return (
+    <div className="card section-gap">
+      <div className="card-header">
+        <div>
+          <h2 className="card-title">Reporting and data retention</h2>
+          <div className="card-subtitle">"Today", days and hours use this timezone. Empty retention = platform default.</div>
+        </div>
+      </div>
+      <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">Reporting timezone</label>
+          <select className="form-input" value={timezone} disabled={!canEdit} onChange={(e) => setTimezone(e.target.value)}>
+            {(TIMEZONES.includes(timezone) ? TIMEZONES : [timezone, ...TIMEZONES]).map((tz) => <option key={tz} value={tz}>{tz}</option>)}
+          </select>
+        </div>
+        {fields.map((f) => (
+          <div key={f.key} className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">{f.label}</label>
+            <input className="form-input" type="number" min={1} max={3650} placeholder="default" value={retention[f.key]}
+              disabled={!canEdit} onChange={(e) => setRetention({ ...retention, [f.key]: e.target.value })} />
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3 }}>{f.help}</div>
+          </div>
+        ))}
+      </div>
+      {save.isError && <div className="alert alert-error" style={{ margin: "0 16px 12px" }}>{errorText(save.error)}</div>}
+      {canEdit && (
+        <div style={{ padding: "0 16px 16px" }}>
+          <button className="btn btn-primary btn-sm" disabled={save.isPending} onClick={() => save.mutate()}>
+            {save.isPending ? "Saving..." : save.isSuccess ? "Saved" : "Save"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Visitor data erasure (task 029). Owners only, this organization only, audited.
+function PrivacySection() {
+  const [kind, setKind] = useState<"visitor_token" | "ip">("visitor_token");
+  const [value, setValue] = useState("");
+  const erase = useMutation({ mutationFn: () => privacyApi.erase({ [kind]: value.trim() }) });
+  return (
+    <div className="card section-gap">
+      <div className="card-header">
+        <div>
+          <h2 className="card-title">Erase a visitor's data</h2>
+          <div className="card-subtitle">For privacy requests: deletes their events and anonymizes their sessions. Cannot be undone.</div>
+        </div>
+      </div>
+      <form style={{ display: "flex", gap: 8, padding: 16, flexWrap: "wrap" }}
+        onSubmit={(e) => { e.preventDefault(); if (window.confirm("Erase this visitor's data? This cannot be undone.")) erase.mutate(); }}>
+        <select className="form-input" style={{ width: "auto" }} value={kind} onChange={(e) => setKind(e.target.value as "visitor_token" | "ip")}>
+          <option value="visitor_token">Visitor ID</option>
+          <option value="ip">IP address</option>
+        </select>
+        <input className="form-input" style={{ maxWidth: 320 }} value={value} onChange={(e) => setValue(e.target.value)} required
+          placeholder={kind === "ip" ? "203.0.113.7" : "v_..."} />
+        <button className="btn btn-secondary btn-sm" disabled={erase.isPending}>Erase</button>
+      </form>
+      {erase.isError && <div className="alert alert-error" style={{ margin: "0 16px 16px" }}>{errorText(erase.error)}</div>}
+      {erase.data && (
+        <div className="alert alert-success" style={{ margin: "0 16px 16px" }}>
+          Done: {erase.data.sessions_anonymized} session(s) anonymized, {erase.data.events_deleted} event(s) and{" "}
+          {erase.data.visitors_deleted} visitor record(s) deleted.
+        </div>
+      )}
+    </div>
   );
 }

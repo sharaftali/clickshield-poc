@@ -6,6 +6,8 @@ Developer tokens are legacy — access is now tied to the Cloud project.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import secrets
 from urllib.parse import urlencode
@@ -33,7 +35,14 @@ def _google_ads_api_version() -> str:
     return version if version.startswith("v") else f"v{version}"
 
 
-def build_authorization_url(state: str) -> str:
+def pkce_pair() -> tuple[str, str]:
+    """(code_verifier, S256 code_challenge) — RFC 7636."""
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def build_authorization_url(state: str, code_challenge: str | None = None) -> str:
     """Build the URL to redirect the user to Google's consent screen."""
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
@@ -44,6 +53,8 @@ def build_authorization_url(state: str) -> str:
         "prompt": "consent",
         "state": state,
     }
+    if code_challenge:
+        params |= {"code_challenge": code_challenge, "code_challenge_method": "S256"}
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
 
@@ -52,7 +63,7 @@ def generate_state_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-async def exchange_code_for_tokens(code: str) -> dict:
+async def exchange_code_for_tokens(code: str, code_verifier: str | None = None) -> dict:
     """Exchange the authorization code for access + refresh tokens."""
     data = {
         "code": code,
@@ -61,6 +72,8 @@ async def exchange_code_for_tokens(code: str) -> dict:
         "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
         "grant_type": "authorization_code",
     }
+    if code_verifier:
+        data["code_verifier"] = code_verifier
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

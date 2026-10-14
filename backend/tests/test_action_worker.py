@@ -75,6 +75,23 @@ class Env:
         return [row for row in self.db.added if getattr(row, "action", None) == action]
 
 
+@pytest.fixture(autouse=True)
+def recorded_alerts(monkeypatch):
+    """The StubDB can't run alert queries: record raise / resolve calls instead (task 028)."""
+    calls = {"raised": [], "resolved": []}
+
+    async def raise_alert(db, **kwargs):
+        calls["raised"].append(kwargs)
+
+    async def resolve(db, *, dedupe_key):
+        calls["resolved"].append(dedupe_key)
+        return 0
+
+    monkeypatch.setattr(worker_module.alert_service, "raise_alert", raise_alert)
+    monkeypatch.setattr(worker_module.alert_service, "resolve", resolve)
+    return calls
+
+
 @pytest.fixture
 def env(monkeypatch) -> Env:
     monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "client-id")

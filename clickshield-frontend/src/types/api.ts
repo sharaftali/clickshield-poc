@@ -1,7 +1,7 @@
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
 export type ProtectionMode = "conservative" | "balanced" | "aggressive" | "custom";
-export type UserRole = "OWNER" | "ADMIN" | "MEMBER";
+export type UserRole = "owner" | "admin" | "member";
 export type ClientVerdict = "fraud" | "legitimate";
 
 export interface TokenPair {
@@ -18,6 +18,8 @@ export interface UserPublic {
   full_name: string | null;
   role: UserRole;
   is_active: boolean;
+  is_platform_admin?: boolean;
+  alert_emails?: boolean;
 }
 
 export interface OrganizationSummary {
@@ -64,6 +66,15 @@ export type RiskBand = "LOW" | "MODERATE" | "HIGH" | "VERY_HIGH";
 export type RuleCategory = "NETWORK" | "REPUTATION" | "VELOCITY" | "BEHAVIOR" | "AUTOMATION" | "GEO" | "ANOMALY";
 
 export interface DashboardOverview {
+  range: "today" | "7d" | "30d";
+  timezone: string;
+  protection_status: "ACTIVE" | "SETUP_REQUIRED";
+  protection_missing: string[];
+  clicks: number;
+  fraud_rate: number;
+  connected_websites: number;
+  connected_google_accounts: number;
+  protected_campaigns: number;
   total_sessions: number;
   suspicious_sessions: number;
   fraud_sessions: number;
@@ -299,6 +310,10 @@ export interface OrganizationResponse {
   protection_mode: ProtectionMode;
   is_active: boolean;
   protection_settings: ProtectionSettings | null;
+  timezone: string;
+  raw_events_retention_days: number | null;
+  sessions_retention_days: number | null;
+  fraud_session_retention_days: number | null;
   policy: ProtectionPolicy | null;
   mode_defaults: Record<string, ProtectionPolicy>;
 }
@@ -306,7 +321,13 @@ export interface OrganizationResponse {
 export interface OrganizationUpdate {
   protection_mode?: ProtectionMode;
   protection_settings?: Partial<ProtectionSettings>;
+  timezone?: string;
+  raw_events_retention_days?: number | null;
+  sessions_retention_days?: number | null;
+  fraud_session_retention_days?: number | null;
 }
+
+export * from "./p3";
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
 

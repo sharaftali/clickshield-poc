@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -15,8 +16,9 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.crypto import decrypt, encrypt
 from app.core.database import get_db
-from app.core.security import decode_token, get_user_from_token
+from app.core.redis import get_redis
 from app.dependencies.auth import CurrentUser
+from app.dependencies.permissions import Permission
 from app.models import (
     AuditResult,
     CampaignStatus,
@@ -37,7 +39,7 @@ from app.schemas.google import (
     SelectCustomerIn,
     UpdateCampaignProtectionIn,
 )
-from app.services import audit_service
+from app.services import alert_service, audit_service
 from app.services.audit_service import AuditAction
 from app.services.exclusion_capacity import campaign_limit
 from app.services.google_oauth import (
@@ -48,6 +50,7 @@ from app.services.google_oauth import (
     fetch_user_email,
     generate_state_token,
     list_accessible_customer_accounts,
+    pkce_pair,
     list_campaign_locations,
     list_google_campaigns,
     refresh_access_token,
@@ -55,8 +58,31 @@ from app.services.google_oauth import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/google", tags=["google"])
+GoogleManager = Permission("google:manage")
+ProtectionManager = Permission("protection:manage")
 
-_pending_states: dict[str, dict[str, Any]] = {}
+OAUTH_STATE_PREFIX = "oauth_state:"
+
+
+class OAuthStateUnavailable(RuntimeError):
+    pass
+
+
+async def save_oauth_state(state: str, data: dict[str, Any]) -> None:
+    """Redis, TTL OAUTH_STATE_TTL_SECONDS (task 033): survives restarts, works across workers."""
+    try:
+        await get_redis().set(OAUTH_STATE_PREFIX + state, json.dumps(data), ex=settings.OAUTH_STATE_TTL_SECONDS)
+    except Exception as exc:  # no in-memory fallback: it would break with several workers
+        raise OAuthStateUnavailable(str(exc)) from exc
+
+
+async def consume_oauth_state(state: str) -> dict[str, Any] | None:
+    """Atomically read and delete (GETDEL): a state works once."""
+    try:
+        raw = await get_redis().getdel(OAUTH_STATE_PREFIX + state)
+    except Exception as exc:
+        raise OAuthStateUnavailable(str(exc)) from exc
+    return json.loads(raw) if raw else None
 
 
 def _google_frontend_redirect(status_value: str, message: str) -> str:
@@ -67,32 +93,6 @@ def _google_frontend_redirect(status_value: str, message: str) -> str:
         }
     )
     return f"{settings.FRONTEND_APP_URL.rstrip('/')}/google?{query}"
-
-
-async def _resolve_google_connect_user(
-    request: Request,
-    db: AsyncSession,
-):
-    authorization = request.headers.get("authorization", "")
-    token = ""
-    if authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    if not token:
-        token = request.query_params.get("token", "").strip()
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Access token is required to connect Google Ads.",
-        )
-
-    payload = decode_token(token)
-    if payload.get("token_type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Access token is required to connect Google Ads.",
-        )
-
-    return await get_user_from_token(db, token)
 
 
 async def _get_latest_active_connection(
@@ -150,21 +150,37 @@ def _audit_connect_failure(db: AsyncSession, pending: dict[str, Any] | None, mes
     )
 
 
-@router.get("/connect")
+@router.post("/connect")
 async def google_connect(
     request: Request,
+    current_user: GoogleManager,
     db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
-    """Start the Google Ads OAuth flow for the current organization."""
-    current_user = await _resolve_google_connect_user(request, db)
+) -> dict[str, str]:
+    """Start the Google Ads OAuth flow (task 033). Authenticated with the normal Authorization
+    header; the frontend then navigates to the returned URL. No JWT ever appears in a URL."""
     state = generate_state_token()
-    _pending_states[state] = {
-        "organization_id": str(current_user.organization_id),
-        "user_id": str(current_user.id),
-        "created_at": datetime.now(timezone.utc),
-    }
+    verifier, challenge = pkce_pair()
+    try:
+        await save_oauth_state(state, {
+            "organization_id": str(current_user.organization_id),
+            "user_id": str(current_user.id),
+            "code_verifier": verifier,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except OAuthStateUnavailable as exc:
+        logger.error("Cannot start Google OAuth: Redis unavailable (%s)", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google connection is temporarily unavailable (state store down). Please try again shortly.",
+        ) from exc
+    audit_service.record(
+        db, action=AuditAction.GOOGLE_CONNECT_STARTED, result=AuditResult.PENDING,
+        organization_id=current_user.organization_id, user_id=current_user.id,
+        resource_type="google_connection", request=request,
+    )
+    await db.commit()
     logger.info("Initiating Google OAuth flow for org=%s user=%s", current_user.organization_id, current_user.id)
-    return RedirectResponse(build_authorization_url(state=state))
+    return {"authorization_url": build_authorization_url(state=state, code_challenge=challenge)}
 
 
 @router.get("/callback")
@@ -175,7 +191,15 @@ async def google_callback(
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Complete the OAuth flow and store encrypted refresh token for the selected organization."""
-    pending = _pending_states.get(state)
+    try:
+        pending = await consume_oauth_state(state)
+    except OAuthStateUnavailable:
+        _audit_connect_failure(db, None, "OAuth state store unavailable", request)
+        await db.commit()
+        return RedirectResponse(
+            _google_frontend_redirect("error", "Google connection is temporarily unavailable. Please connect again."),
+            status_code=status.HTTP_302_FOUND,
+        )
     if not pending:
         _audit_connect_failure(db, None, "Invalid or expired OAuth state", request)
         await db.commit()
@@ -186,7 +210,6 @@ async def google_callback(
             ),
             status_code=status.HTTP_302_FOUND,
         )
-    _pending_states.pop(state, None)
 
     organization_id = pending.get("organization_id")
     if not organization_id:
@@ -199,7 +222,7 @@ async def google_callback(
         )
 
     try:
-        tokens = await exchange_code_for_tokens(code)
+        tokens = await exchange_code_for_tokens(code, pending.get("code_verifier"))
     except ValueError as exc:
         _audit_connect_failure(db, pending, str(exc), request)
         await db.commit()
@@ -234,15 +257,19 @@ async def google_callback(
             status_code=status.HTTP_302_FOUND,
         )
 
-    existing = await db.execute(
-        select(GoogleConnection)
-        .where(
-            GoogleConnection.organization_id == org.id,
-            GoogleConnection.google_account_email == email,
+    # Reuse the connection of the same Google account. Without an email we can't tell
+    # which account this is: create a new connection rather than overwrite another one.
+    connection = None
+    if email:
+        existing = await db.execute(
+            select(GoogleConnection)
+            .where(
+                GoogleConnection.organization_id == org.id,
+                GoogleConnection.google_account_email == email,
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
-    connection = existing.scalar_one_or_none()
+        connection = existing.scalar_one_or_none()
 
     if connection is None:
         connection = GoogleConnection(
@@ -262,6 +289,7 @@ async def google_callback(
         connection.auth_error = None
 
     await db.flush()
+    await alert_service.resolve(db, dedupe_key=alert_service.auth_expired_key(connection.id))
     audit_service.record(
         db,
         action=AuditAction.GOOGLE_CONNECT,
@@ -354,7 +382,7 @@ async def list_connections(
 async def select_customer(
     payload: SelectCustomerIn,
     request: Request,
-    current_user: CurrentUser,
+    current_user: GoogleManager,
     db: AsyncSession = Depends(get_db),
 ) -> GoogleConnection:
     """Persist the specific Google Ads customer account selected by the user."""
@@ -395,7 +423,7 @@ async def select_customer(
 @router.post("/campaigns/sync", response_model=CampaignSyncSummary)
 async def sync_campaigns(
     request: Request,
-    current_user: CurrentUser,
+    current_user: GoogleManager,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignSyncSummary:
     connection = await _get_latest_active_connection(db, current_user.organization_id)
@@ -427,6 +455,13 @@ async def sync_campaigns(
         if isinstance(exc, GoogleAuthError) and exc.permanent:
             connection.needs_reauth = True
             connection.auth_error = str(exc)[:1000]
+            await alert_service.raise_alert(
+                db, organization_id=connection.organization_id, type=alert_service.AlertType.AUTH_EXPIRED,
+                severity="critical", dedupe_key=alert_service.auth_expired_key(connection.id),
+                title="Google Ads authorization expired",
+                message="Google rejected the stored authorization. Reconnect Google Ads to keep protection running.",
+                resource_type="google_connection", resource_id=str(connection.id), details={"error": str(exc)[:500]},
+            )
         audit_sync(AuditResult.FAILED, error=str(exc))
         await db.commit()
         raise HTTPException(
@@ -617,7 +652,7 @@ async def update_campaign_protection(
     campaign_row_id: uuid.UUID,
     payload: UpdateCampaignProtectionIn,
     request: Request,
-    current_user: CurrentUser,
+    current_user: ProtectionManager,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignOut:
     result = await db.execute(

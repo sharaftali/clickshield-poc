@@ -14,7 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.dependencies.auth import AdminUser, CurrentUser
+from app.dependencies.auth import CurrentUser
+from app.dependencies.permissions import Permission
 from app.models import AuditResult, Rule, RuleOverride
 from app.schemas.rules import RuleDefaults, RuleOut, RuleOverrideIn, RuleOverrideOut
 from app.services import audit_service
@@ -23,6 +24,7 @@ from app.services.rules import EVALUATORS, validate_params
 from app.services.rules.repository import apply_override, invalidate, rule_to_config
 
 router = APIRouter(prefix="/api/v1/rules", tags=["rules"])
+RuleEditor = Permission("protection:manage")
 
 
 def _rule_out(rule: Rule, override: RuleOverride | None) -> RuleOut:
@@ -64,7 +66,7 @@ async def update_rule(
     code: str,
     payload: RuleOverrideIn,
     request: Request,
-    current_user: AdminUser,
+    current_user: RuleEditor,
     db: AsyncSession = Depends(get_db),
 ) -> RuleOut:
     rule, override = await _load(db, current_user.organization_id, code)
@@ -106,7 +108,7 @@ async def update_rule(
 async def reset_rule(
     code: str,
     request: Request,
-    current_user: AdminUser,
+    current_user: RuleEditor,
     db: AsyncSession = Depends(get_db),
 ) -> RuleOut:
     rule, override = await _load(db, current_user.organization_id, code)

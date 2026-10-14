@@ -24,7 +24,7 @@ from app.models import (
     Platform,
     PlatformAction,
 )
-from app.services import audit_service
+from app.services import alert_service, audit_service
 from app.services.audit_service import AuditAction
 from app.services.exclusion_capacity import lock_campaign, rebalance
 from app.services.google_oauth import GoogleAuthError, refresh_access_token
@@ -209,7 +209,7 @@ class ActionWorker:
             access_token = await self._get_access_token(connection)
         except GoogleAuthError as exc:
             if exc.permanent:
-                self._flag_reauth(db, connection, str(exc))
+                await self._flag_reauth(db, connection, str(exc))
                 return await self._fail(db, action, exclusion, str(exc))
             return await self._retry_or_fail(db, action, exclusion, str(exc))
 
@@ -242,7 +242,7 @@ class ActionWorker:
         if outcome.api_request_id:
             exclusion.api_request_id = outcome.api_request_id
         if outcome.error_category == ErrorCategory.AUTH:
-            self._flag_reauth(db, connection, _describe(outcome))
+            await self._flag_reauth(db, connection, _describe(outcome))
         if outcome.retryable:
             return await self._retry_or_fail(db, action, exclusion, _describe(outcome), outcome)
         return await self._fail(db, action, exclusion, _describe(outcome), outcome)
@@ -281,6 +281,9 @@ class ActionWorker:
             audit_action = AuditAction.REMOVE_IP_EXCLUSION
 
         self._audit(db, action, exclusion, audit_action, AuditResult.SUCCESS, outcome=outcome)
+        await alert_service.resolve(
+            db, dedupe_key=alert_service.google_failure_key(exclusion.google_campaign_id or exclusion.campaign_id)
+        )
         if action.action_type == ActionType.REMOVE_IP_EXCLUSION:
             await self._slot_freed(db, exclusion)  # eviction / expiry → promote the overflow queue
         return "successful"
@@ -325,6 +328,19 @@ class ActionWorker:
             "Protection action %s (%s) failed permanently: %s",
             action.id, action.action_type, message,
         )
+        if exclusion is not None:
+            # Spec §43 failure flow ends with "Alert" (and §75 test 7).
+            await alert_service.raise_alert(
+                db, organization_id=exclusion.organization_id, type=alert_service.AlertType.GOOGLE_API_FAILURE,
+                severity="critical",
+                dedupe_key=alert_service.google_failure_key(exclusion.google_campaign_id or exclusion.campaign_id),
+                title="Protection action failed",
+                message=(f"Google Ads could not {'exclude' if action.action_type == ActionType.ADD_IP_EXCLUSION else 'remove'} "
+                         f"IP {exclusion.ip_address} on campaign {exclusion.campaign_id}: {message}"),
+                resource_type="exclusion", resource_id=str(exclusion.id),
+                details={"ip": exclusion.ip_address, "campaign_id": exclusion.campaign_id, "attempts": action.attempts,
+                         "google_request_id": outcome.api_request_id if outcome else None},
+            )
         if freed_slot and exclusion is not None:
             await self._slot_freed(db, exclusion)
         return "failed"
@@ -416,7 +432,16 @@ class ActionWorker:
         )
 
     @staticmethod
-    def _flag_reauth(db: AsyncSession, connection: GoogleConnection, message: str) -> None:
+    async def _flag_reauth(db: AsyncSession, connection: GoogleConnection, message: str) -> None:
+        await alert_service.raise_alert(
+            db, organization_id=connection.organization_id, type=alert_service.AlertType.AUTH_EXPIRED,
+            severity="critical", dedupe_key=alert_service.auth_expired_key(connection.id),
+            title="Google Ads authorization expired",
+            message=("Google rejected the stored authorization for "
+                     f"{connection.google_account_email or connection.customer_id}. Protection actions fail "
+                     "until you reconnect Google Ads."),
+            resource_type="google_connection", resource_id=str(connection.id), details={"error": message[:500]},
+        )
         if not connection.needs_reauth:
             audit_service.record(
                 db,
