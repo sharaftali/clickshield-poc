@@ -28,7 +28,7 @@ docker compose up --build
 
 On start the backend runs `alembic upgrade head`, then serves the API. The worker waits until the backend is healthy, which means the schema is migrated.
 
-**How protection runs.** When a session's verdict becomes FRAUD (high risk and confidence), the API queues an IP exclusion in the same database transaction. After the commit it pushes a `process_action` job to Redis. The worker (`arq app.workers.arq_worker.WorkerSettings`) calls Google Ads.
+**How protection runs.** When a session's verdict becomes FRAUD (see "Fraud engine" below), the API queues an IP exclusion in the same database transaction. After the commit it pushes a `process_action` job to Redis. The worker (`arq app.workers.arq_worker.WorkerSettings`) calls Google Ads.
 
 A sweep every `WORKER_SWEEP_SECONDS` (default 15) also:
 - runs due retries;
@@ -37,6 +37,30 @@ A sweep every `WORKER_SWEEP_SECONDS` (default 15) also:
 - promotes campaign overflow queues when the IP exclusion limit frees up.
 
 Set `AUTO_PROTECTION_ENABLED=false` for detect-and-report only.
+
+**Fraud engine.** Each tracking batch is scored by rules. Each rule has a category: NETWORK, REPUTATION, VELOCITY, BEHAVIOR, AUTOMATION, GEO or ANOMALY.
+- **Risk:** rules in the same category add up with diminishing returns, and each category has a cap.
+- **Signal diversity:** the number of independent categories that contributed.
+- **Confidence:** how sure the engine is of the verdict.
+
+The verdict comes from the organization's protection mode:
+
+| Verdict | Means | Action |
+|---|---|---|
+| SAFE | allow | none |
+| MONITOR | watch | none |
+| FLAG | needs review | shown in the Sessions "Needs review" filter, never excluded automatically |
+| FRAUD | block | IP exclusion queued |
+
+Mode thresholds (Conservative / Balanced / Aggressive / Custom) are set by `PROTECTION_MODE_POLICIES`. Owners and admins change the mode on the Settings page.
+
+**Rules and tuning.** Rule weights and thresholds live in the `rules` table, which migrations seed. Per-organization overrides are made on the Settings page (`/api/v1/rules`). Every change is audited.
+
+**Rollback switches** (environment variables, no deploy needed):
+- `SCORING_VERSION=1`: the old sum / average scoring and the 80/80 decision.
+- `RULES_SOURCE=code`: ignore the database and use the built-in rule catalog.
+
+**Anomaly detection.** The worker runs `anomaly_detection` every 5 minutes. It builds hourly per-campaign traffic statistics and compares them with a 14-day median/MAD baseline. It records click spikes, sudden fast clicking and traffic drops, and audits HIGH anomalies as `TRAFFIC_ANOMALY_DETECTED`. Campaigns with less than 7 days of traffic are skipped. `ANOMALY_DETECTION_ENABLED=false` turns it off.
 
 **Configuration.** Compose reads `backend/.env` if it exists (Google OAuth client ID/secret, keys, …). The database, Redis, CORS and proxy settings are set in `docker-compose.yml` and override `.env`, so a `.env` written for running on the host (with `localhost` URLs) still works. Without Google credentials, set `GOOGLE_ADS_DRY_RUN=true` in `backend/.env`; otherwise protection actions fail with "Google Ads is not configured".
 
