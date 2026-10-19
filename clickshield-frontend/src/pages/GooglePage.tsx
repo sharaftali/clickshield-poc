@@ -134,7 +134,12 @@ export default function GooglePage() {
 
   useEffect(() => {
     const status = searchParams.get("google_oauth_status");
-    const message = searchParams.get("google_oauth_message");
+    // The retired GET /api/v1/google/callback redirects here with a reason instead of a message.
+    const message =
+      searchParams.get("google_oauth_message") ??
+      (searchParams.get("reason") === "legacy_callback"
+        ? "This Google redirect address is no longer used. Please connect Google Ads again."
+        : null);
     if (!status || !message) {
       return;
     }
@@ -153,6 +158,7 @@ export default function GooglePage() {
     const nextParams = new URLSearchParams(searchParams);
     nextParams.delete("google_oauth_status");
     nextParams.delete("google_oauth_message");
+    nextParams.delete("reason");
     setSearchParams(nextParams, { replace: true });
   }, [refetchAcc, refetchCampaigns, refetchConn, searchParams, setSearchParams]);
 

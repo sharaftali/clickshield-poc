@@ -156,6 +156,10 @@ export const googleApi = {
   connect: () =>
     api.post<{ authorization_url: string }>("/google/connect").then((r) => r.data),
 
+  /** POST /api/v1/google/complete — finish OAuth with the code/state Google sent to /google/callback (SEC-01) */
+  complete: (body: { code: string; state: string }) =>
+    api.post<{ status: "success"; connection_id: string }>("/google/complete", body).then((r) => r.data),
+
   /** GET /api/v1/google/accounts — list accessible Google Ads customer accounts */
   accounts: () =>
     api.get<GoogleAccountOut[]>("/google/accounts").then((r) => r.data),

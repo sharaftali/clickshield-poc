@@ -1,10 +1,13 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { authApi } from "../services/apiService";
 import { useAuthStore } from "../store/authStore";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const from = (useLocation().state as { from?: unknown } | null)?.from;
+  // Only same-site paths: never let a crafted state send the user to another origin.
+  const returnTo = typeof from === "string" && from.startsWith("/") && !from.startsWith("//") ? from : "/";
   const setAuth = useAuthStore((s) => s.setAuth);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -23,7 +26,7 @@ export default function LoginPage() {
         accessToken: data.tokens.access_token,
         refreshToken: data.tokens.refresh_token,
       });
-      navigate("/");
+      navigate(returnTo, { replace: true });
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { detail?: string } } })?.response?.data

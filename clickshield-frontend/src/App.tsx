@@ -10,6 +10,7 @@ import FraudEventsPage from "./pages/FraudEventsPage";
 import TopIPsPage from "./pages/TopIPsPage";
 import ProtectionPage from "./pages/ProtectionPage";
 import GooglePage from "./pages/GooglePage";
+import GoogleCallback from "./pages/GoogleCallback";
 import WebsitesPage from "./pages/WebsitesPage";
 import AlertsPage from "./pages/AlertsPage";
 import TeamPage, { AcceptInvitePage } from "./pages/TeamPage";
@@ -40,6 +41,7 @@ export default function App() {
         <Route path="/campaigns/:id" element={<CampaignDetailPage />} />
         <Route path="/protection" element={<ProtectionPage />} />
         <Route path="/google" element={<GooglePage />} />
+        <Route path="/google/callback" element={<GoogleCallback />} />
         <Route path="/websites" element={<WebsitesPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/team" element={<TeamPage />} />
