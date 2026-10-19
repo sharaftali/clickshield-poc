@@ -198,7 +198,7 @@ Plain environment variables:
 | `REDIS_URL` | `rediss://<elasticache-endpoint>:6379/0` |
 | `TRUSTED_PROXY_CIDRS` | the VPC CIDR (the ALB's nodes), e.g. `10.0.0.0/16`, so client IPs come from the ALB's `X-Forwarded-For` (task 001) |
 | `FRONTEND_APP_URL` | `https://app.example.com` |
-| `GOOGLE_OAUTH_REDIRECT_URI` | `https://app.example.com/api/v1/google/callback` (register it in Google Cloud) |
+| `GOOGLE_OAUTH_REDIRECT_URI` | `https://app.example.com/google/callback` — a **dashboard** route (served by the frontend, not the API). The dashboard posts the code to `/api/v1/google/complete`. Register exactly this URI in Google Cloud. |
 | `API_CORS_ORIGINS` | `https://app.example.com` |
 | `TRACKING_SNIPPET_BASE_URL` | public base URL that serves `/track.js` (the snippet's script) |
 | `RUN_MIGRATIONS` | `true` on `api` (see below); not used by `worker` |

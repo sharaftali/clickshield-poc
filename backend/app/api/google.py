@@ -4,10 +4,9 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urlencode
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,16 +83,6 @@ async def _consume_oauth_state(state: str) -> dict[str, Any] | None:
     except Exception as exc:
         raise OAuthStateUnavailable(str(exc)) from exc
     return json.loads(raw) if raw else None
-
-
-def _google_frontend_redirect(status_value: str, message: str) -> str:
-    query = urlencode(
-        {
-            "google_oauth_status": status_value,
-            "google_oauth_message": message,
-        }
-    )
-    return f"{settings.FRONTEND_APP_URL.rstrip('/')}/google?{query}"
 
 
 async def _get_latest_active_connection(
@@ -320,34 +309,13 @@ async def google_complete(
     return {"status": "success", "connection_id": str(connection.id)}
 
 
-@router.get("/callback")
-async def google_callback(
-    request: Request,
-    code: str = Query(...),
-    state: str = Query(...),
-    db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
-    """Legacy redirect target (replaced by POST /complete in the next commit)."""
-    try:
-        pending = await _consume_oauth_state(state)
-    except OAuthStateUnavailable:
-        return RedirectResponse(
-            _google_frontend_redirect("error", "Google connection is temporarily unavailable. Please connect again."),
-            status_code=status.HTTP_302_FOUND,
-        )
-    if not pending:
-        return RedirectResponse(
-            _google_frontend_redirect("error", "Invalid or expired Google OAuth state. Please connect again."),
-            status_code=status.HTTP_302_FOUND,
-        )
-    try:
-        await _store_connection(db, request, pending, code)
-    except OAuthCompletionError as exc:
-        return RedirectResponse(_google_frontend_redirect("error", str(exc)), status_code=status.HTTP_302_FOUND)
+@router.get("/callback", include_in_schema=False)
+async def google_callback() -> RedirectResponse:
+    """Retired redirect target (SEC-01). Codes are no longer exchanged here: Google now redirects to
+    the dashboard route /google/callback, which posts them to POST /google/complete. This route
+    touches neither the code nor the state, so an old registered redirect URI can't be abused."""
     return RedirectResponse(
-        _google_frontend_redirect(
-            "success", "Google Ads connected successfully. Select a customer account to continue protection setup."
-        ),
+        f"{settings.FRONTEND_APP_URL.rstrip('/')}/google?google_oauth_status=error&reason=legacy_callback",
         status_code=status.HTTP_302_FOUND,
     )
 

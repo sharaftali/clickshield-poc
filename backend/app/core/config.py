@@ -91,8 +91,8 @@ class Settings(BaseSettings):
         description="Google OAuth client secret",
     )
     GOOGLE_OAUTH_REDIRECT_URI: str = Field(
-        default="http://localhost:8000/api/v1/google/callback",
-        description="OAuth callback URL, e.g. https://api.clickshield.com/api/v1/google/callback",
+        default="http://localhost:8080/google/callback",
+        description="Dashboard route Google redirects to, e.g. https://app.example.com/google/callback (the SPA then POSTs to /api/v1/google/complete)",
     )
     GOOGLE_DEVELOPER_TOKEN: str | None = Field(
         default=None,
