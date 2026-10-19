@@ -75,6 +75,8 @@ These are defaults, and organizations can override them in Settings. It starts w
 
 **Configuration.** Compose reads `backend/.env` if it exists (Google OAuth client ID/secret, keys, …). Start from `backend/.env.example`. The database, Redis, CORS and proxy settings are set in `docker-compose.yml` and override `.env`, so a `.env` written for running on the host (with `localhost` URLs) still works. Without Google credentials, set `GOOGLE_ADS_DRY_RUN=true` in `backend/.env`; otherwise protection actions fail with "Google Ads is not configured".
 
+**Connecting Google Ads (OAuth).** Google redirects the browser to a dashboard route, `GOOGLE_OAUTH_REDIRECT_URI` (default `http://localhost:8080/google/callback`). The dashboard then posts the `code` and `state` to `POST /api/v1/google/complete` with the user's Bearer token. The API checks that the state was started by that same user and organization before it saves anything (SEC-01). Register the redirect URI exactly in Google Cloud; with `npm run dev` use `http://localhost:5173/google/callback` instead. The old `GET /api/v1/google/callback` no longer exchanges codes: it redirects to `/google` with an error.
+
 Useful commands:
 
 ```bash
