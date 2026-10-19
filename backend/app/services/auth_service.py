@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+import secrets
 from datetime import timedelta
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +24,8 @@ from app.schemas.auth import (
 )
 from app.services import audit_service
 from app.services.audit_service import AuditAction
+
+SLUG_MAX_LENGTH = 100  # organizations.slug
 
 
 def user_public(user: User) -> UserPublic:
@@ -58,7 +62,7 @@ def issue_tokens(user: User) -> TokenPair:
 class AuthService:
     @staticmethod
     def _slugify(value: str) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:SLUG_MAX_LENGTH].strip("-")
         return slug or "organization"
 
     @staticmethod
@@ -85,10 +89,12 @@ class AuthService:
         if await AuthService._get_user_by_email(db, normalized_email):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists.")
 
-        slug = (organization_slug or organization_name).strip()
-        slug = AuthService._slugify(slug)
+        slug = AuthService._slugify((organization_slug or organization_name).strip())
         if await AuthService._get_organization_by_slug(db, slug):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Organization slug already exists.")
+            if organization_slug:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Organization slug already exists.")
+            # Derived from the name, which another organization may share: don't refuse the sign-up.
+            slug = f"{slug[:SLUG_MAX_LENGTH - 9]}-{secrets.token_hex(4)}"
 
         organization = Organization(
             name=organization_name.strip(),
@@ -106,7 +112,14 @@ class AuthService:
         )
 
         db.add_all([organization, user])
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            # A concurrent sign-up took the email or slug between the checks above and this insert.
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="An account or organization with these details already exists."
+            ) from exc
         audit_service.record(
             db,
             action=AuditAction.USER_REGISTER,
@@ -121,17 +134,10 @@ class AuthService:
         # Nothing else commits this request: without it the account was never persisted.
         await db.commit()
 
-        access_token = create_token(str(user.id), "access")
-        refresh_token = create_token(str(user.id), "refresh", expires_delta=timedelta(days=7))
-
         return AuthResponse(
             user=user_public(user),
             organization=organization_summary(organization),
-            tokens=TokenPair(
-                access_token=access_token,
-                refresh_token=refresh_token,
-                expires_in_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
-            ),
+            tokens=issue_tokens(user),
         )
 
     @staticmethod
@@ -179,17 +185,10 @@ class AuthService:
         if organization is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found for this user.")
 
-        access_token = create_token(str(user.id), "access")
-        refresh_token = create_token(str(user.id), "refresh", expires_delta=timedelta(days=7))
-
         return AuthResponse(
             user=user_public(user),
             organization=organization_summary(organization),
-            tokens=TokenPair(
-                access_token=access_token,
-                refresh_token=refresh_token,
-                expires_in_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
-            ),
+            tokens=issue_tokens(user),
         )
 
     @staticmethod
@@ -209,14 +208,7 @@ class AuthService:
         if user is None or not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is no longer active.")
 
-        access_token = create_token(str(user.id), "access")
-        new_refresh_token = create_token(str(user.id), "refresh", expires_delta=timedelta(days=7))
-
-        return TokenPair(
-            access_token=access_token,
-            refresh_token=new_refresh_token,
-            expires_in_minutes=60,
-        )
+        return issue_tokens(user)
 
     @staticmethod
     async def get_authenticated_user(db: AsyncSession, user: User) -> AuthenticatedUserResponse:
@@ -259,7 +251,11 @@ class AuthService:
         )
         db.add(user)
         invitation.accepted_at = datetime.now(timezone.utc)
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError as exc:  # the same invitation accepted twice at once
+            await db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists.") from exc
         audit_service.record(
             db, action=AuditAction.INVITATION_ACCEPTED, result=AuditResult.SUCCESS,
             organization_id=organization.id, user_id=user.id, resource_type="invitation",

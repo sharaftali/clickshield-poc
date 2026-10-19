@@ -10,6 +10,7 @@ exclusion (spec §41) — and respects the campaign's IP exclusion capacity
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -46,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 UNSUPPORTED_CAMPAIGN_TYPES = {CampaignType.PERFORMANCE_MAX, CampaignType.VIDEO}
 COOLDOWN_STATUSES = (ExclusionStatus.FAILED, ExclusionStatus.SKIPPED)
+# RFC 1918, carrier-grade NAT, IPv6 unique-local
+NON_ROUTABLE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",
+))
 
 
 @dataclass
@@ -57,6 +62,21 @@ class EnqueueResult:
     @property
     def action_ids(self) -> list[uuid.UUID]:
         return [action.id for action in self.actions]
+
+
+def is_routable_ip(value) -> bool:
+    """Spec §38 "Is IP valid?": ad clicks come from the public internet. A private, loopback or
+    link-local address means a proxy in front of the API isn't trusted (TRUSTED_PROXY_CIDRS) —
+    excluding it would block nobody and waste one of the campaign's limited slots."""
+    try:
+        ip = ipaddress.ip_address(str(value))
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+        return False
+    return not any(ip.version == net.version and ip in net for net in NON_ROUTABLE_NETWORKS)
 
 
 def is_actionable_fraud(session: Session) -> bool:
@@ -86,6 +106,12 @@ async def enqueue_exclusion_for_session(db: AsyncSession, session: Session) -> E
     """Create or refresh the exclusion for a FRAUD session. The caller commits."""
     if not is_actionable_fraud(session):
         return EnqueueResult("not_actionable")
+    if not is_routable_ip(session.ip_address):
+        logger.warning(
+            "Not excluding non-routable IP %s (session %s): check TRUSTED_PROXY_CIDRS",
+            session.ip_address, session.id,
+        )
+        return EnqueueResult("ip_not_routable")
     if session.google_campaign_id is None:
         return EnqueueResult("no_campaign")
 

@@ -62,6 +62,10 @@ app = FastAPI(
     version=settings.APP_VERSION,
     debug=settings.DEBUG,
     lifespan=lifespan,
+    # The interactive API map is a development aid; staging / production don't publish it (spec §62).
+    docs_url="/docs" if settings.is_development else None,
+    redoc_url="/redoc" if settings.is_development else None,
+    openapi_url="/openapi.json" if settings.is_development else None,
 )
 
 # The last middleware added is the outermost: error metrics wrap CORS and headers.

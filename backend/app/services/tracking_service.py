@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
@@ -43,6 +44,25 @@ HUMAN_ACTION_EVENT_TYPES = frozenset(
     t.value for t in (EventType.FORM_START, EventType.FORM_SUBMIT, EventType.PHONE_CLICK, EventType.CONVERSION)
 )
 LAST_EVENT_WRITE_INTERVAL = timedelta(seconds=60)
+# extra_signals keys computed by the server. The client payload is copied into
+# extra_signals, so a browser must not be able to pre-seed (or type-confuse) these.
+SERVER_SIGNAL_KEYS = frozenset({
+    "source_platform", "campaign_id", "gclid_present", "human_actions", "origin_missing", "rate_limited",
+    "ad_click_velocity", "repeat_visitor", "ad_click_intervals", "event_intervals",
+})
+
+
+def _client_number(value, *, low: float, high: float) -> float | None:
+    """A numeric value reported by the browser, or None if it isn't a finite number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    if not math.isfinite(number):
+        return None
+    return min(high, max(low, number))
 
 
 class TrackingRejected(ValueError):
@@ -68,7 +88,7 @@ class TrackingService:
 
     @staticmethod
     def _detect_device(user_agent: str, payload: dict | None) -> str:
-        touch_points = int((payload or {}).get("touch_points") or 0)
+        touch_points = _client_number((payload or {}).get("touch_points"), low=0, high=1000) or 0
         ua = user_agent.casefold()
         if "ipad" in ua or "tablet" in ua:
             return "tablet"
@@ -109,7 +129,7 @@ class TrackingService:
         return None
 
     def _build_extra_signals(self, first_event, is_google_ads_traffic: bool) -> dict:
-        payload = dict(first_event.payload or {})
+        payload = {k: v for k, v in (first_event.payload or {}).items() if k not in SERVER_SIGNAL_KEYS}
         payload["source_platform"] = "google_ads" if is_google_ads_traffic else "other"
         payload["campaign_id"] = first_event.campaign_id
         payload["gclid_present"] = bool(first_event.gclid)
@@ -418,7 +438,9 @@ class TrackingService:
         )
         user_agent = request.headers.get("user-agent") or ""
         is_google_ads_traffic = self._is_google_ads_traffic(first_event)
-        language = first_event.language or request.headers.get("accept-language", "").split(",")[0].strip() or None
+        language = (
+            first_event.language or request.headers.get("accept-language", "").split(",")[0].strip()[:20] or None
+        )
         browser = self._detect_browser(user_agent)
         operating_system = self._detect_os(user_agent)
         device = self._detect_device(user_agent, first_event.payload)
@@ -592,11 +614,10 @@ class TrackingService:
                 # On-page clicks only feed engagement, never ad-click velocity.
                 session.click_count = (session.click_count or 0) + 1
             elif ev.event_type == EventType.SCROLL.value:
-                if ev.payload and "depth" in ev.payload:
-                    session.scroll_depth = max(
-                        session.scroll_depth or 0.0,
-                        float(ev.payload["depth"]),
-                    )
+                # Percent; a malformed or non-finite value is ignored (Infinity would break JSON responses).
+                depth = _client_number((ev.payload or {}).get("depth"), low=0.0, high=100.0)
+                if depth is not None:
+                    session.scroll_depth = max(session.scroll_depth or 0.0, depth)
         if human_actions:
             signals = dict(session.extra_signals or {})
             signals["human_actions"] = int(signals.get("human_actions") or 0) + human_actions

@@ -66,6 +66,9 @@ api.interceptors.response.use(
 
         const newAccessToken: string = data.access_token;
         localStorage.setItem("cs_access_token", newAccessToken);
+        // The server issues a new refresh token on every refresh; keep it, or the session
+        // ends when the original one (from login) expires.
+        if (data.refresh_token) localStorage.setItem("cs_refresh_token", data.refresh_token);
 
         flushQueue(newAccessToken);
         isRefreshing = false;

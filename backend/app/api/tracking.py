@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 
@@ -47,6 +48,18 @@ async def track_script(request: Request) -> Response:
     return _script_response(request)
 
 
+def _reject_constant(name: str):
+    # Python accepts NaN / Infinity; JSON (and PostgreSQL JSONB) don't, and browsers never send them.
+    raise ValueError(f"{name} is not valid JSON")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):  # 1e999
+        raise ValueError("number out of range")
+    return value
+
+
 async def _read_body(request: Request) -> bytes:
     """Body capped at TRACKING_MAX_BODY_BYTES, refused before any JSON parsing (task 031)."""
     limit = settings.TRACKING_MAX_BODY_BYTES
@@ -81,9 +94,11 @@ async def track_events(request: Request, db: AsyncSession = Depends(get_db)) -> 
 
     body = await _read_body(request)
     try:
-        payload = TrackingBatchIn.model_validate(json.loads(body or b"null"))
-    except json.JSONDecodeError as exc:
+        data = json.loads(body or b"null", parse_constant=_reject_constant, parse_float=_finite_float)
+    except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Body is not valid JSON.") from exc
+    try:
+        payload = TrackingBatchIn.model_validate(data)
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors(include_url=False, include_context=False)
