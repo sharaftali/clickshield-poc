@@ -39,6 +39,13 @@ class GoogleConnectionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GoogleCompleteIn(BaseModel):
+    """What Google appended to the dashboard redirect (SEC-01)."""
+
+    code: str = Field(..., min_length=1, max_length=4096)
+    state: str = Field(..., min_length=16, max_length=256)
+
+
 class SelectCustomerIn(BaseModel):
     customer_id: str = Field(..., min_length=10, max_length=20)
     login_customer_id: str | None = Field(default=None, min_length=10, max_length=20)

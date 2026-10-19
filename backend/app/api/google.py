@@ -35,6 +35,7 @@ from app.schemas.google import (
     CampaignOut,
     CampaignSyncSummary,
     GoogleAccountOut,
+    GoogleCompleteIn,
     GoogleConnectionOut,
     SelectCustomerIn,
     UpdateCampaignProtectionIn,
@@ -76,8 +77,8 @@ async def save_oauth_state(state: str, data: dict[str, Any]) -> None:
         raise OAuthStateUnavailable(str(exc)) from exc
 
 
-async def consume_oauth_state(state: str) -> dict[str, Any] | None:
-    """Atomically read and delete (GETDEL): a state works once."""
+async def _consume_oauth_state(state: str) -> dict[str, Any] | None:
+    """Atomically read and delete (GETDEL): a state works once. None = unknown or expired."""
     try:
         raw = await get_redis().getdel(OAUTH_STATE_PREFIX + state)
     except Exception as exc:
@@ -183,79 +184,40 @@ async def google_connect(
     return {"authorization_url": build_authorization_url(state=state, code_challenge=challenge)}
 
 
-@router.get("/callback")
-async def google_callback(
-    request: Request,
-    code: str = Query(...),
-    state: str = Query(...),
-    db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
-    """Complete the OAuth flow and store encrypted refresh token for the selected organization."""
-    try:
-        pending = await consume_oauth_state(state)
-    except OAuthStateUnavailable:
-        _audit_connect_failure(db, None, "OAuth state store unavailable", request)
-        await db.commit()
-        return RedirectResponse(
-            _google_frontend_redirect("error", "Google connection is temporarily unavailable. Please connect again."),
-            status_code=status.HTTP_302_FOUND,
-        )
-    if not pending:
-        _audit_connect_failure(db, None, "Invalid or expired OAuth state", request)
-        await db.commit()
-        return RedirectResponse(
-            _google_frontend_redirect(
-                "error",
-                "Invalid or expired Google OAuth state. Please connect again.",
-            ),
-            status_code=status.HTTP_302_FOUND,
-        )
+class OAuthCompletionError(Exception):
+    """The OAuth flow can't finish. The message is safe to show the user."""
 
+
+async def _store_connection(db: AsyncSession, request: Request, pending: dict[str, Any], code: str) -> GoogleConnection:
+    """Exchange the authorization code and save the encrypted refresh token for the state's organization.
+
+    `pending` must already be verified to belong to the caller. Audits failures itself and
+    raises OAuthCompletionError; never logs the code or any token.
+    """
     organization_id = pending.get("organization_id")
     if not organization_id:
-        return RedirectResponse(
-            _google_frontend_redirect(
-                "error",
-                "Google OAuth state is missing organization context. Please retry.",
-            ),
-            status_code=status.HTTP_302_FOUND,
-        )
+        raise OAuthCompletionError("Google OAuth state is missing organization context. Please retry.")
 
     try:
         tokens = await exchange_code_for_tokens(code, pending.get("code_verifier"))
     except ValueError as exc:
         _audit_connect_failure(db, pending, str(exc), request)
         await db.commit()
-        return RedirectResponse(
-            _google_frontend_redirect("error", str(exc)),
-            status_code=status.HTTP_302_FOUND,
-        )
+        raise OAuthCompletionError(str(exc)) from exc
 
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
     if not refresh_token:
         _audit_connect_failure(db, pending, "Google did not return a refresh token", request)
         await db.commit()
-        return RedirectResponse(
-            _google_frontend_redirect(
-                "error",
-                "Google OAuth did not return a refresh token. Ensure offline access is granted.",
-            ),
-            status_code=status.HTTP_302_FOUND,
-        )
+        raise OAuthCompletionError("Google OAuth did not return a refresh token. Ensure offline access is granted.")
 
     email = await fetch_user_email(access_token or "") if access_token else None
 
     result = await db.execute(select(Organization).where(Organization.id == organization_id))
     org = result.scalar_one_or_none()
     if org is None:
-        return RedirectResponse(
-            _google_frontend_redirect(
-                "error",
-                "No organization was found for this Google OAuth flow.",
-            ),
-            status_code=status.HTTP_302_FOUND,
-        )
+        raise OAuthCompletionError("No organization was found for this Google OAuth flow.")
 
     # Reuse the connection of the same Google account. Without an email we can't tell
     # which account this is: create a new connection rather than overwrite another one.
@@ -310,11 +272,81 @@ async def google_callback(
         connection.id,
         email,
     )
+    return connection
 
+
+@router.post("/complete")
+async def google_complete(
+    payload: GoogleCompleteIn,
+    request: Request,
+    current_user: GoogleManager,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Finish the Google Ads OAuth flow (SEC-01). The dashboard receives Google's redirect and
+    posts `code` + `state` here with the user's Bearer token. The state must belong to that
+    user and organization, so a consent link started by someone else can't attach a victim's
+    Google account to the attacker's organization."""
+    caller = {"organization_id": str(current_user.organization_id), "user_id": str(current_user.id)}
+    try:
+        pending = await _consume_oauth_state(payload.state)
+    except OAuthStateUnavailable as exc:
+        logger.error("Cannot complete Google OAuth: Redis unavailable (%s)", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google connection is temporarily unavailable (state store down). Please try again shortly.",
+        ) from exc
+    if not pending:
+        _audit_connect_failure(db, caller, "Invalid or expired OAuth state", request)
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired Google OAuth state.")
+
+    if pending.get("user_id") != caller["user_id"] or pending.get("organization_id") != caller["organization_id"]:
+        # The state is already consumed, so the code is wasted too. Never log the code or state.
+        logger.warning(
+            "SECURITY: Google OAuth completion refused: the state was started by a different user or "
+            "organization (completing user=%s, organization=%s)", current_user.id, current_user.organization_id,
+        )
+        _audit_connect_failure(db, caller, "OAuth state belongs to a different user or organization", request)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This Google connection was started by a different user. Please connect again from your own session.",
+        )
+
+    try:
+        connection = await _store_connection(db, request, pending, payload.code)
+    except OAuthCompletionError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {"status": "success", "connection_id": str(connection.id)}
+
+
+@router.get("/callback")
+async def google_callback(
+    request: Request,
+    code: str = Query(...),
+    state: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Legacy redirect target (replaced by POST /complete in the next commit)."""
+    try:
+        pending = await _consume_oauth_state(state)
+    except OAuthStateUnavailable:
+        return RedirectResponse(
+            _google_frontend_redirect("error", "Google connection is temporarily unavailable. Please connect again."),
+            status_code=status.HTTP_302_FOUND,
+        )
+    if not pending:
+        return RedirectResponse(
+            _google_frontend_redirect("error", "Invalid or expired Google OAuth state. Please connect again."),
+            status_code=status.HTTP_302_FOUND,
+        )
+    try:
+        await _store_connection(db, request, pending, code)
+    except OAuthCompletionError as exc:
+        return RedirectResponse(_google_frontend_redirect("error", str(exc)), status_code=status.HTTP_302_FOUND)
     return RedirectResponse(
         _google_frontend_redirect(
-            "success",
-            "Google Ads connected successfully. Select a customer account to continue protection setup.",
+            "success", "Google Ads connected successfully. Select a customer account to continue protection setup."
         ),
         status_code=status.HTTP_302_FOUND,
     )
