@@ -52,7 +52,7 @@ class ErrorCategory(StrEnum):
 
 
 # Error codes are "<errorCode oneof key>.<enum value>", e.g. "criterionError.INVALID_IP_ADDRESS".
-# Values taken from google.ads.googleads.v21.errors.
+# Values taken from google.ads.googleads.v24.errors.
 RETRYABLE_ERROR_CODES = frozenset(
     {
         "internalError.INTERNAL_ERROR",
@@ -128,6 +128,67 @@ def _same_ip_block(stored: str | None, target: str) -> bool:
 
 def _digits(value: str | None) -> str:
     return (value or "").replace("-", "").strip()
+
+
+def build_ads_headers(access_token: str | None, login_customer_id: str | None = None) -> dict[str, str]:
+    """Headers for every Google Ads REST call, in one place.
+
+    - `developer-token` only when GOOGLE_DEVELOPER_TOKEN is set. Google retired developer tokens
+      (access now comes from the Cloud project), ignores the header today and will reject it in a
+      future API version, so it is never required.
+    - `login-customer-id` (digits only) only when the customer is reached through a manager account.
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token or ''}",
+        "Content-Type": "application/json",
+    }
+    if settings.GOOGLE_DEVELOPER_TOKEN:
+        headers["developer-token"] = settings.GOOGLE_DEVELOPER_TOKEN
+    login = re.sub(r"\D", "", login_customer_id or "")
+    if login:
+        headers["login-customer-id"] = login
+    return headers
+
+
+class GoogleApiError(ValueError):
+    """A Google Ads / OAuth HTTP call failed. `str(error)` is a one-line, secret-free description.
+
+    A ValueError so existing `except ValueError` handlers (and the user-facing detail) keep working.
+    """
+
+    def __init__(
+        self, message: str, *, status: int | None = None, code: str | None = None, request_id: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.request_id = request_id
+
+
+def ads_error_from_response(response: httpx.Response, *, customer_id: str | None, action: str) -> GoogleApiError:
+    """Log (request id, error code, customer id; never a token) and describe a failed Ads response."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, list):  # searchStream reports errors as [{"error": {...}}]
+        body = next((item for item in body if isinstance(item, dict) and item.get("error")), None)
+    error = body.get("error") if isinstance(body, dict) else None
+    codes, messages, failure_request_id = _parse_google_ads_failure(error if isinstance(error, dict) else {})
+    request_id = response.headers.get("request-id") or failure_request_id
+    detail = "; ".join(messages) or response.text[:300]
+    code = codes[0] if codes else None
+    logger.warning(
+        "Google Ads %s failed: HTTP %s codes=%s request_id=%s customer_id=%s",
+        action, response.status_code, codes, request_id, customer_id or "-",
+    )
+    summary = f"Google Ads API HTTP {response.status_code}"
+    if code:
+        summary += f" [{code}]"
+    return GoogleApiError(
+        f"{summary} ({action}): {detail}" + (f" (request-id {request_id})" if request_id else ""),
+        status=response.status_code, code=code, request_id=request_id,
+    )
 
 
 def classify_error_codes(
@@ -380,16 +441,7 @@ class GoogleAdsAdapter:
         )
 
     def _headers(self) -> dict[str, str]:
-        headers = {
-            "Authorization": f"Bearer {self.access_token or ''}",
-            "Content-Type": "application/json",
-        }
-        # Optional since the developer-token sunset (spec §35); sent only if configured.
-        if settings.GOOGLE_DEVELOPER_TOKEN:
-            headers["developer-token"] = settings.GOOGLE_DEVELOPER_TOKEN
-        if self.login_customer_id:
-            headers["login-customer-id"] = self.login_customer_id
-        return headers
+        return build_ads_headers(self.access_token, self.login_customer_id)
 
     def _customer_or_fail(self) -> str:
         if not self.customer_id.isdigit():
@@ -466,7 +518,7 @@ class GoogleAdsAdapter:
             ) as client:
                 response = await client.post(url, headers=self._headers(), json=payload)
         except httpx.HTTPError as exc:
-            logger.warning("Google Ads %s: network error: %s", action, exc)
+            logger.warning("Google Ads %s: network error (customer_id=%s): %s", action, self.customer_id, exc)
             raise _CallFailed(
                 GoogleAdsApiResult(
                     ok=False,
@@ -515,8 +567,8 @@ class GoogleAdsAdapter:
             )
         return body, request_id
 
-    @staticmethod
     def _failure_result(
+        self,
         error: dict[str, Any],
         *,
         http_status: int | None,
@@ -530,8 +582,8 @@ class GoogleAdsAdapter:
         detail = "; ".join(messages) or fallback_text[:500]
         status_text = f"HTTP {http_status}" if http_status else "error"
         logger.warning(
-            "Google Ads %s failed: %s codes=%s request_id=%s category=%s retryable=%s",
-            action, status_text, codes, request_id, category, retryable,
+            "Google Ads %s failed: %s codes=%s request_id=%s customer_id=%s category=%s retryable=%s",
+            action, status_text, codes, request_id, self.customer_id, category, retryable,
         )
         return GoogleAdsApiResult(
             ok=False,

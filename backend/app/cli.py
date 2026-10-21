@@ -9,6 +9,8 @@ Operator commands (tasks 027, 029, 032):
         Re-encrypt every Google refresh token with the first key of TOKEN_ENCRYPTION_KEYS.
     python -m app.cli retention [--apply]
         Run the retention job now (dry run unless --apply).
+    python -m app.cli google-smoke --connection-id <id> --campaign-id <id> [--ip 203.0.113.7] [--cleanup]
+        Live check against a Google Ads TEST account (needs GOOGLE_ADS_DRY_RUN=false). Exit code 0/1/2.
 """
 from __future__ import annotations
 
@@ -96,6 +98,12 @@ def main(argv: list[str] | None = None) -> None:
     commands.add_parser("reencrypt-tokens", help="re-encrypt Google tokens with the newest key")
     p = commands.add_parser("retention", help="run data retention now")
     p.add_argument("--apply", action="store_true", help="really delete / anonymize (default: dry run)")
+    p = commands.add_parser("google-smoke", help="live Google Ads check: list, add, read back, remove an IP exclusion")
+    p.add_argument("--connection-id", required=True, help="google_connections.id")
+    p.add_argument("--campaign-id", required=True, help="Google campaign id (digits) or a Click Shield campaign row id")
+    p.add_argument("--ip", default="203.0.113.7", help="IP to exclude (default: TEST-NET-3 documentation address)")
+    p.add_argument("--cleanup", action="store_true", help="remove the exclusion again")
+    p.add_argument("--customer-id", help="use this customer instead of the connection's (the manager is looked up)")
     args = parser.parse_args(argv)
 
     if args.command == "create-admin":
@@ -106,6 +114,12 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(reencrypt_tokens())
     elif args.command == "retention":
         asyncio.run(retention(args.apply))
+    elif args.command == "google-smoke":
+        from app.services.google_smoke import run_smoke
+
+        sys.exit(asyncio.run(run_smoke(
+            args.connection_id, args.campaign_id, ip=args.ip, cleanup=args.cleanup, customer_id=args.customer_id,
+        )))
 
 
 if __name__ == "__main__":

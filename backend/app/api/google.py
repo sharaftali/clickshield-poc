@@ -54,6 +54,7 @@ from app.services.google_oauth import (
     list_campaign_locations,
     list_google_campaigns,
     refresh_access_token,
+    resolve_login_customer_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -378,6 +379,16 @@ async def list_connections(
     return list(result.scalars().all())
 
 
+async def _derive_login_customer_id(connection: GoogleConnection, customer_id: str) -> str | None:
+    """Manager account to use as login-customer-id when the user didn't give one. Never blocks selection."""
+    try:
+        access_token = (await refresh_access_token(decrypt(connection.refresh_token_encrypted))).get("access_token")
+        return await resolve_login_customer_id(access_token, customer_id) if access_token else None
+    except ValueError as exc:
+        logger.warning("Could not derive login-customer-id for customer_id=%s: %s", customer_id, exc)
+        return None
+
+
 @router.post("/select-customer", response_model=GoogleConnectionOut)
 async def select_customer(
     payload: SelectCustomerIn,
@@ -396,7 +407,9 @@ async def select_customer(
 
     previous_customer_id = connection.customer_id
     connection.customer_id = payload.customer_id
-    connection.login_customer_id = payload.login_customer_id
+    # Reached through a manager (MCC) account? Then every API call needs its ID as login-customer-id.
+    login_customer_id = payload.login_customer_id or await _derive_login_customer_id(connection, payload.customer_id)
+    connection.login_customer_id = login_customer_id
     connection.google_account_email = payload.google_account_email or connection.google_account_email
     connection.is_active = True
 
@@ -411,7 +424,7 @@ async def select_customer(
         request=request,
         details={
             "customer_id": payload.customer_id,
-            "login_customer_id": payload.login_customer_id,
+            "login_customer_id": login_customer_id,
             "previous_customer_id": previous_customer_id or None,
         },
     )

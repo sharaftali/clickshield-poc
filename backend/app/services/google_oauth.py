@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from app.adapters.google_ads_adapter import GoogleApiError, ads_error_from_response, build_ads_headers
 from app.models.enums import CampaignStatus, CampaignType
 from app.core.config import settings
 from app.schemas.google import GoogleAccountOut
@@ -172,46 +173,46 @@ async def fetch_user_email(access_token: str) -> str | None:
     return None
 
 
+async def fetch_accessible_customer_ids(access_token: str) -> list[str]:
+    """Customer IDs the authorized Google user can reach directly (listAccessibleCustomers).
+
+    Accounts that sit under a manager are not listed; only the manager is. Raises GoogleApiError.
+    """
+    url = f"https://googleads.googleapis.com/{_google_ads_api_version()}/customers:listAccessibleCustomers"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=build_ads_headers(access_token))
+    except httpx.HTTPError as exc:
+        raise GoogleApiError("Google Ads customer listing failed due to a network error.") from exc
+    if resp.status_code != 200:
+        raise ads_error_from_response(resp, customer_id=None, action="list accessible customers")
+    ids = []
+    for resource_name in resp.json().get("resourceNames", []):
+        name = str(resource_name).strip()
+        customer_id = name.split("/", 1)[1] if name.startswith("customers/") else name
+        if customer_id.isdigit():
+            ids.append(customer_id)
+    return ids
+
+
 async def list_accessible_customer_accounts(access_token: str) -> list[GoogleAccountOut]:
     """List the Google Ads customer accounts available to the authorized user."""
     if not access_token:
         return []
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
-    customers_url = (
-        f"https://googleads.googleapis.com/{_google_ads_api_version()}/"
-        "customers:listAccessibleCustomers"
-    )
-
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(customers_url, headers=headers)
-            if resp.status_code != 200:
-                logger.warning("Google ads customer listing failed: %s %s", resp.status_code, resp.text)
-                return []
-            payload = resp.json()
-    except Exception as exc:
+        customer_ids = await fetch_accessible_customer_ids(access_token)
+    except ValueError as exc:
         logger.warning("Failed to list accessible Google Ads customers: %s", exc)
         return []
-
-    resource_names = payload.get("resourceNames", [])
-    accounts: list[GoogleAccountOut] = []
-    for resource_name in resource_names:
-        match = str(resource_name).strip()
-        customer_id = match.split("/", 1)[1] if match.startswith("customers/") else match
-        if customer_id.isdigit():
-            accounts.append(
-                GoogleAccountOut(
-                    customer_id=customer_id,
-                    descriptive_name=f"Google Ads customer {customer_id}",
-                    is_manager=False,
-                    is_test_account=False,
-                )
-            )
-    return accounts
+    return [
+        GoogleAccountOut(
+            customer_id=customer_id,
+            descriptive_name=f"Google Ads customer {customer_id}",
+            is_manager=False,
+            is_test_account=False,
+        )
+        for customer_id in customer_ids
+    ]
 
 
 def _normalize_campaign_type(value: str | None) -> CampaignType | None:
@@ -243,14 +244,7 @@ async def list_google_campaigns(
     if not access_token or not customer_id:
         return []
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "developer-token": settings.GOOGLE_DEVELOPER_TOKEN or "",
-    }
-    if login_customer_id:
-        headers["login-customer-id"] = login_customer_id
-    headers = {key: value for key, value in headers.items() if value}
+    headers = build_ads_headers(access_token, login_customer_id)
 
     payload = {
         "query": (
@@ -273,12 +267,11 @@ async def list_google_campaigns(
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code != 200:
-                logger.warning("Google Ads campaign listing failed: %s %s", resp.status_code, resp.text)
-                raise ValueError(f"Failed to fetch Google Ads campaigns: {resp.text}")
+                raise ads_error_from_response(resp, customer_id=customer_id, action="list campaigns")
             payload = resp.json()
     except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch Google Ads campaigns: %s", exc)
-        raise ValueError("Failed to fetch Google Ads campaigns from Google.") from exc
+        logger.warning("Failed to fetch Google Ads campaigns (customer_id=%s): %s", customer_id, exc)
+        raise GoogleApiError("Failed to fetch Google Ads campaigns from Google.") from exc
 
     campaigns: list[dict[str, str | bool]] = []
     for batch in payload if isinstance(payload, list) else []:
@@ -316,14 +309,7 @@ async def count_ip_exclusions_by_campaign(
     Includes the advertiser's own exclusions and Click Shield's ACTIVE ones.
     Raises ValueError if Google can't be queried.
     """
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
-    if settings.GOOGLE_DEVELOPER_TOKEN:
-        headers["developer-token"] = settings.GOOGLE_DEVELOPER_TOKEN
-    if login_customer_id:
-        headers["login-customer-id"] = login_customer_id
+    headers = build_ads_headers(access_token, login_customer_id)
     payload = {
         "query": (
             "SELECT campaign.id, campaign_criterion.criterion_id "
@@ -340,10 +326,9 @@ async def count_ip_exclusions_by_campaign(
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
     except httpx.HTTPError as exc:
-        raise ValueError("Failed to count Google Ads IP exclusions.") from exc
+        raise GoogleApiError("Failed to count Google Ads IP exclusions.") from exc
     if resp.status_code != 200:
-        logger.warning("Google Ads IP exclusion count failed: %s %s", resp.status_code, resp.text)
-        raise ValueError(f"Failed to count Google Ads IP exclusions: {resp.text}")
+        raise ads_error_from_response(resp, customer_id=customer_id, action="count IP exclusions")
 
     counts: dict[str, int] = {}
     body = resp.json()
@@ -355,15 +340,6 @@ async def count_ip_exclusions_by_campaign(
     return counts
 
 
-def _ads_headers(access_token: str, login_customer_id: str | None) -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    if settings.GOOGLE_DEVELOPER_TOKEN:
-        headers["developer-token"] = settings.GOOGLE_DEVELOPER_TOKEN
-    if login_customer_id:
-        headers["login-customer-id"] = login_customer_id
-    return headers
-
-
 async def _search_stream(access_token: str, customer_id: str, login_customer_id: str | None, query: str) -> list[dict]:
     url = (
         f"https://googleads.googleapis.com/{_google_ads_api_version()}/customers/"
@@ -371,14 +347,37 @@ async def _search_stream(access_token: str, customer_id: str, login_customer_id:
     )
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(url, headers=_ads_headers(access_token, login_customer_id), json={"query": query})
+            resp = await client.post(url, headers=build_ads_headers(access_token, login_customer_id), json={"query": query})
     except httpx.HTTPError as exc:
-        raise ValueError("Google Ads query failed due to a network error.") from exc
+        raise GoogleApiError("Google Ads query failed due to a network error.") from exc
     if resp.status_code != 200:
-        logger.warning("Google Ads query failed: %s %s", resp.status_code, resp.text)
-        raise ValueError(f"Google Ads query failed: {resp.text}")
+        raise ads_error_from_response(resp, customer_id=customer_id, action="query")
     body = resp.json()
     return [row for batch in (body if isinstance(body, list) else []) for row in batch.get("results", [])]
+
+
+async def resolve_login_customer_id(access_token: str, customer_id: str) -> str | None:
+    """The manager (MCC) account to send as login-customer-id for `customer_id`, or None.
+
+    None when the user reaches the customer directly (it is in listAccessibleCustomers) or when no
+    accessible manager has it in its hierarchy. Minimal on purpose: no hierarchy browsing (later task).
+    Raises GoogleApiError only if the accessible-customers call itself fails.
+    """
+    accessible = await fetch_accessible_customer_ids(access_token)
+    if customer_id in accessible:
+        return None
+    for manager_id in accessible[:25]:
+        try:
+            rows = await _search_stream(
+                access_token, manager_id, manager_id,
+                "SELECT customer_client.id, customer_client.manager, customer_client.level "
+                f"FROM customer_client WHERE customer_client.id = {int(customer_id)}",
+            )
+        except ValueError:  # not a manager account, or no access: try the next one
+            continue
+        if rows:
+            return manager_id
+    return None
 
 
 # geo_target_constant rows rarely change: resolve each once per process.

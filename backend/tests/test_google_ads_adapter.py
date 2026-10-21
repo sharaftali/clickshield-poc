@@ -18,15 +18,15 @@ from app.core.config import settings
 CID = "1234567890"
 CAMPAIGN = "555"
 CRITERION = f"customers/{CID}/campaignCriteria/{CAMPAIGN}~777"
-MUTATE_URL = f"https://googleads.googleapis.com/v21/customers/{CID}/campaignCriteria:mutate"
-SEARCH_URL = f"https://googleads.googleapis.com/v21/customers/{CID}/googleAds:search"
+MUTATE_URL = f"https://googleads.googleapis.com/v24/customers/{CID}/campaignCriteria:mutate"
+SEARCH_URL = f"https://googleads.googleapis.com/v24/customers/{CID}/googleAds:search"
 
 
 @pytest.fixture(autouse=True)
 def google_configured(monkeypatch):
     monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "client-id")
     monkeypatch.setattr(settings, "GOOGLE_DEVELOPER_TOKEN", None)
-    monkeypatch.setattr(settings, "GOOGLE_ADS_API_VERSION", "v21")
+    monkeypatch.setattr(settings, "GOOGLE_ADS_API_VERSION", "v24")
 
 
 class Recorder:
@@ -64,7 +64,7 @@ def google_failure(status: int, *codes: tuple[str, str], request_id: str = "req-
                 "message": "Request contains an invalid argument.",
                 "details": [
                     {
-                        "@type": "type.googleapis.com/google.ads.googleads.v21.errors.GoogleAdsFailure",
+                        "@type": "type.googleapis.com/google.ads.googleads.v24.errors.GoogleAdsFailure",
                         "errors": [{"errorCode": {kind: value}, "message": f"{kind} {value}"} for kind, value in codes],
                         "requestId": request_id,
                     }
@@ -207,7 +207,7 @@ async def test_create_partial_failure_payload_is_not_success():
                     "message": "partial",
                     "details": [
                         {
-                            "@type": "type.googleapis.com/google.ads.googleads.v21.errors.GoogleAdsFailure",
+                            "@type": "type.googleapis.com/google.ads.googleads.v24.errors.GoogleAdsFailure",
                             "errors": [{"errorCode": {"criterionError": "INVALID_IP_ADDRESS"}}],
                         }
                     ],

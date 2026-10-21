@@ -75,6 +75,10 @@ These are defaults, and organizations can override them in Settings. It starts w
 
 **Configuration.** Compose reads `backend/.env` if it exists (Google OAuth client ID/secret, keys, …). Start from `backend/.env.example`. The database, Redis, CORS and proxy settings are set in `docker-compose.yml` and override `.env`, so a `.env` written for running on the host (with `localhost` URLs) still works. Without Google credentials, set `GOOGLE_ADS_DRY_RUN=true` in `backend/.env`; otherwise protection actions fail with "Google Ads is not configured".
 
+**Google Ads API version.** `GOOGLE_ADS_API_VERSION` defaults to `v24` (Google supports a version for about a year: v21 and v22 are past or at their sunset, v24 until about May 2027). An override in `backend/.env` or the task definition wins over the default, so remove old pins such as `v21` when upgrading. Before moving to a newer version, diff the fields, enums and error codes Click Shield uses (campaign, campaign_criterion IP_BLOCK/LOCATION/PROXIMITY, customer_client, geo_target_constant) and run `google-smoke`.
+
+**Google Ads access.** Google retired developer tokens on 2026-09-09; access comes from the Google Cloud project, so `GOOGLE_DEVELOPER_TOKEN` is optional and should stay unset (the header is sent only if it is set). When a customer is reached through a manager (MCC) account, Click Shield stores the manager's ID on the connection when the customer is selected (given in the request, or looked up from the manager hierarchy) and sends it as `login-customer-id` on every call.
+
 **Connecting Google Ads (OAuth).** Google redirects the browser to a dashboard route, `GOOGLE_OAUTH_REDIRECT_URI` (default `http://localhost:8080/google/callback`). The dashboard then posts the `code` and `state` to `POST /api/v1/google/complete` with the user's Bearer token. The API checks that the state was started by that same user and organization before it saves anything (SEC-01). Register the redirect URI exactly in Google Cloud; with `npm run dev` use `http://localhost:5173/google/callback` instead. The old `GET /api/v1/google/callback` no longer exchanges codes: it redirects to `/google` with an error.
 
 Useful commands:
@@ -92,6 +96,7 @@ docker compose run --rm backend python -m app.cli create-admin --email owner@cli
 docker compose run --rm backend python -m app.cli grant-platform-admin --email staff@clickshield.com
 docker compose run --rm backend python -m app.cli reencrypt-tokens     # after adding a new key first in TOKEN_ENCRYPTION_KEYS
 docker compose run --rm backend python -m app.cli retention            # dry run now (add --apply to delete)
+docker compose run --rm backend python -m app.cli google-smoke --connection-id <id> --campaign-id <google-campaign-id> --cleanup   # LIVE Google Ads check (needs GOOGLE_ADS_DRY_RUN=false)
 ```
 
 The development seed (`ENVIRONMENT=development` only) creates `DEFAULT_ADMIN_EMAIL`. Without `DEFAULT_ADMIN_PASSWORD` it generates a password and logs it once. Platform staff see the **Admin** page (health, tenants, failed actions with retry, global rules, audit) only after `grant-platform-admin`.

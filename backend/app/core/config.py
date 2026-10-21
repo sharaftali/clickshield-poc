@@ -94,11 +94,14 @@ class Settings(BaseSettings):
         default="http://localhost:8080/google/callback",
         description="Dashboard route Google redirects to, e.g. https://app.example.com/google/callback (the SPA then POSTs to /api/v1/google/complete)",
     )
+    # Optional and never required at boot. Google retired developer tokens on 2026-09-09: access
+    # level now comes from the Google Cloud project. The `developer-token` header is sent only when
+    # this is set; Google ignores it today and will reject it in a future API version.
     GOOGLE_DEVELOPER_TOKEN: str | None = Field(
         default=None,
-        description="Legacy developer token. Accepted but ignored by Google Ads API.",
+        description="Legacy developer token (optional, ignored by Google Ads; leave unset).",
     )
-    GOOGLE_ADS_API_VERSION: str = "v21"
+    GOOGLE_ADS_API_VERSION: str = "v24"
     # Local development only: process actions without calling Google. Exclusions
     # are stored as SKIPPED (never ACTIVE) so the dashboard can't show fake protection.
     GOOGLE_ADS_DRY_RUN: bool = False
